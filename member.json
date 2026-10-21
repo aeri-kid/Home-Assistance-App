@@ -1,0 +1,20 @@
+[
+    {
+        "family_id": "F001",
+        "member_id": "M001",
+        "member_name": "John Smith",
+        "pin": "1234"
+    },
+    {
+        "family_id": "F001",
+        "member_id": "M002",
+        "member_name": "Mary Smith",
+        "pin": "5678"
+    },
+    {
+        "family_id": "F002",
+        "member_id": "M003",
+        "member_name": "Alex Jones",
+        "pin": "2468"
+    }
+]

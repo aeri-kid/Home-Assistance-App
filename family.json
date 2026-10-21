@@ -1,0 +1,12 @@
+[
+    {
+        "family_id": "F001",
+        "family_name": "Smith Family",
+        "family_password": "smith123"
+    },
+    {
+        "family_id": "F002",
+        "family_name": "Jones Family",
+        "family_password": "jones123"
+    }
+]

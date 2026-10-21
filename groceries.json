@@ -1,0 +1,25 @@
+[
+    {
+        "family_id": "F001",
+        "stock": [
+            "Rice",
+            "Eggs",
+            "Milk"
+        ],
+        "out_of_stock": [
+            "Bread",
+            "Cooking oil"
+        ]
+    },
+    {
+        "family_id": "F002",
+        "stock": [
+            "Pasta",
+            "Apples"
+        ],
+        "out_of_stock": [
+            "Coffee",
+            "Flour"
+        ]
+    }
+]

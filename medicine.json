@@ -1,0 +1,23 @@
+[
+    {
+        "family_id": "F001",
+        "medicine_name": "Vitamin D",
+        "member_id": "M001",
+        "pills_left": 20,
+        "pills_per_day": 1
+    },
+    {
+        "family_id": "F001",
+        "medicine_name": "Pain relief tablets",
+        "member_id": "M002",
+        "pills_left": 12,
+        "pills_per_day": 2
+    },
+    {
+        "family_id": "F002",
+        "medicine_name": "Vitamin C",
+        "member_id": "M003",
+        "pills_left": 30,
+        "pills_per_day": 1
+    }
+]
