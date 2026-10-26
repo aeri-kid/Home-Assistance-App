@@ -1,24 +1,33 @@
 [
     {
-        "family_id": "F001",
-        "member_id": "M001",
-        "member_name": "John Smith",
-        "pin": "1234",
-        "avatar": "👵🏻"
-    },
-    {
-        "family_id": "F001",
-        "member_id": "M002",
-        "member_name": "Mary Smith",
-        "pin": "5678",
-        "avatar": "👵🏻"
-    },
-    {
         "family_id": "F002",
         "member_id": "M003",
         "member_name": "Alex Jones",
         "pin": "2468",
         "avatar": "👵🏻"
+    },
+    {
+        "family_id": "F001",
+        "member_id": 1,
+        "member_name": "Dota",
+        "pin": "1409",
+        "avatar": "🧒🏻",
+        "medicine_ids": [
+            "101",
+            "100",
+            "103"
+        ]
+    },
+    {
+        "family_id": "F001",
+        "member_id": 2,
+        "member_name": "U MYO THIHA",
+        "pin": "0000",
+        "avatar": "🧓🏻",
+        "medicine_ids": [
+            "104",
+            "101",
+            "100"
+        ]
     }
 ]
-
