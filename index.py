@@ -340,12 +340,310 @@ class FamilyApp:
         self.trash.bind("<ButtonRelease-1>", self.drop_on_trash)
 
     def build_medicine(self):
-        ttk.Label(self.medicine_tab, text="Medicine List",
-                  font=("Arial", 16, "bold")).pack(anchor="w")
+        header = ttk.Frame(self.medicine_tab)
+        header.pack(fill="x", pady=(0, 8))
+        ttk.Label(header, text="Medicine List",
+                  font=("Arial", 16, "bold")).pack(side="left")
+        ttk.Button(header, text="+ Add Medicine",
+                   command=self.add_medicine_dialog).pack(side="right", padx=(8, 0))
+        ttk.Button(header, text="Delete Selected",
+                   command=self.delete_selected_medicines).pack(side="right")
+
+        controls = ttk.Frame(self.medicine_tab)
+        controls.pack(fill="x", pady=(0, 6))
+        ttk.Label(controls, text="Column:").pack(side="left")
+        self.med_column_var = tk.StringVar(value="Medicine")
+        self.med_column_combo = ttk.Combobox(
+            controls, textvariable=self.med_column_var, state="readonly", width=16,
+            values=("Medicine ID", "Medicine", "Member", "Pills left", "Pills per day"))
+        self.med_column_combo.pack(side="left", padx=(5, 8))
+        ttk.Label(controls, text="Action:").pack(side="left")
+        self.med_action_var = tk.StringVar(value="Sort A–Z")
+        self.med_action_combo = ttk.Combobox(
+            controls, textvariable=self.med_action_var, state="readonly", width=12,
+            values=("Sort A–Z", "Sort Z–A", "Filter contains"))
+        self.med_action_combo.pack(side="left", padx=(5, 8))
+        self.med_filter_entry = ttk.Entry(controls, width=18)
+        self.med_filter_entry.pack(side="left", padx=(0, 8))
+        ttk.Button(controls, text="Apply", command=self.apply_medicine_view).pack(side="left")
+        ttk.Button(controls, text="Clear", command=self.clear_medicine_view).pack(side="left", padx=(5, 0))
+        ttk.Label(self.medicine_tab, text="Double-click a medicine to edit it.",
+                  foreground="gray").pack(anchor="w")
+
         self.medicine_table = self.make_table(
-            self.medicine_tab, ("medicine", "member", "left", "per_day"),
-            ("Medicine", "Member", "Pills left", "Pills per day")
-        )
+            self.medicine_tab,
+            ("medicine_id", "medicine", "member", "left", "per_day"),
+            ("Medicine ID", "Medicine", "Member", "Pills left", "Pills per day"))
+        widths = {"medicine_id": 105, "medicine": 230, "member": 200,
+                  "left": 110, "per_day": 120}
+        for col, width in widths.items():
+            self.medicine_table.column(col, width=width, anchor="w")
+        self.medicine_table.bind("<Double-1>", self.edit_selected_medicine)
+        self.medicine_sort = None
+        self.medicine_filter = None
+
+    def _family_members(self):
+        if not self.current_family:
+            return []
+        family_id = str(self.current_family.get("family_id", ""))
+        return [m for m in self.members if str(m.get("family_id")) == family_id]
+
+    def _medicine_member_label(self, med):
+        members = self._family_members()
+        member_ids = med.get("member_ids")
+        if isinstance(member_ids, list):
+            if not member_ids:
+                return "All"
+            if {str(x) for x in member_ids} >= {str(m.get("member_id")) for m in members}:
+                return "All"
+            labels = []
+            for member in members:
+                if str(member.get("member_id")) in {str(x) for x in member_ids}:
+                    labels.append(f"{member.get('avatar', '👤')} {member.get('member_name', 'Member')}")
+            return ", ".join(labels) if labels else "Unknown member"
+
+        member_id = str(med.get("member_id", ""))
+        if member_id.casefold() == "all":
+            return "All"
+        member = next((m for m in members if str(m.get("member_id")) == member_id), None)
+        if member:
+            return f"{member.get('avatar', '👤')} {member.get('member_name', 'Member')}"
+        return "Unknown member"
+
+    def _next_medicine_id(self, exclude=None):
+        used = {
+            str(m.get("medicine_id", ""))
+            for m in self.medicines
+            if m is not exclude and str(m.get("medicine_id", "")).isdigit()
+        }
+        for number in range(100, 1000):
+            code = f"{number:03d}"
+            if code not in used:
+                return code
+        return None
+
+    def _sync_member_medicine_ids(self, family_id):
+        # Rebuild this family's medicine references while preserving other families.
+        for member in self.members:
+            if str(member.get("family_id")) == str(family_id):
+                member["medicine_ids"] = []
+        family_members = [
+            m for m in self.members if str(m.get("family_id")) == str(family_id)
+        ]
+        for med in self.medicines:
+            if str(med.get("family_id")) != str(family_id):
+                continue
+            ids = med.get("member_ids")
+            if isinstance(ids, list):
+                assigned = {str(x) for x in ids}
+            else:
+                legacy_id = str(med.get("member_id", ""))
+                if legacy_id.casefold() == "all":
+                    assigned = {str(m.get("member_id")) for m in family_members}
+                else:
+                    assigned = {legacy_id}
+            for member in family_members:
+                if str(member.get("member_id")) in assigned:
+                    member.setdefault("medicine_ids", []).append(str(med.get("medicine_id", "")))
+
+    def _save_medicine_data(self):
+        family_id = str(self.current_family.get("family_id", ""))
+        self._sync_member_medicine_ids(family_id)
+        save_json("medicine.json", self.medicines)
+        save_json("member.json", self.members)
+
+    def add_medicine_dialog(self):
+        self._medicine_editor_dialog(None)
+
+    def edit_selected_medicine(self, event=None):
+        selection = self.medicine_table.selection()
+        if not selection:
+            return
+        med = getattr(self, "_medicine_rows", {}).get(selection[0])
+        if med:
+            self._medicine_editor_dialog(med)
+
+    def _medicine_editor_dialog(self, med=None):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Edit Medicine" if med else "Add Medicine")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=18)
+        body.pack(fill="both", expand=True)
+
+        ttk.Label(body, text="Medicine ID:").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
+        med_id = str(med.get("medicine_id", "")) if med else (self._next_medicine_id() or "")
+        ttk.Label(body, text=med_id or "No IDs available").grid(row=0, column=1, sticky="w", pady=5)
+
+        ttk.Label(body, text="Medicine name *:").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
+        name_var = tk.StringVar(value=med.get("medicine_name", "") if med else "")
+        name_entry = ttk.Entry(body, textvariable=name_var, width=32)
+        name_entry.grid(row=1, column=1, sticky="ew", pady=5)
+
+        ttk.Label(body, text="Member:").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=5)
+        members = self._family_members()
+        member_options = ["All"] + [
+            f"{m.get('avatar', '👤')} {m.get('member_name', 'Member')}" for m in members
+        ]
+        member_lookup = {
+            f"{m.get('avatar', '👤')} {m.get('member_name', 'Member')}": m for m in members
+        }
+        selected_label = "All"
+        if med:
+            existing_ids = med.get("member_ids")
+            if isinstance(existing_ids, list):
+                if len(existing_ids) == 1:
+                    match = next((m for m in members if str(m.get("member_id")) == str(existing_ids[0])), None)
+                    if match:
+                        selected_label = f"{match.get('avatar', '👤')} {match.get('member_name', 'Member')}"
+            elif str(med.get("member_id", "")).casefold() != "all":
+                match = next((m for m in members if str(m.get("member_id")) == str(med.get("member_id"))), None)
+                if match:
+                    selected_label = f"{match.get('avatar', '👤')} {match.get('member_name', 'Member')}"
+        member_var = tk.StringVar(value=selected_label if selected_label in member_options else "All")
+        member_combo = ttk.Combobox(body, textvariable=member_var, values=member_options,
+                                    state="readonly", width=29)
+        member_combo.grid(row=2, column=1, sticky="ew", pady=5)
+
+        ttk.Label(body, text="Pills left:").grid(row=3, column=0, sticky="w", padx=(0, 12), pady=5)
+        left_var = tk.StringVar(value=str(med.get("pills_left", "")) if med else "")
+        ttk.Entry(body, textvariable=left_var, width=32).grid(row=3, column=1, sticky="ew", pady=5)
+
+        ttk.Label(body, text="Pills per day:").grid(row=4, column=0, sticky="w", padx=(0, 12), pady=5)
+        per_day_var = tk.StringVar(value=str(med.get("pills_per_day", "")) if med else "")
+        ttk.Entry(body, textvariable=per_day_var, width=32).grid(row=4, column=1, sticky="ew", pady=5)
+
+        def optional_number(value, label):
+            value = value.strip()
+            if not value:
+                return ""
+            try:
+                number = int(value)
+                if number < 0:
+                    raise ValueError
+                return number
+            except ValueError:
+                raise ValueError(f"{label} must be a non-negative whole number, or left blank.")
+
+        def save_medicine():
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showerror("Missing medicine name", "Enter a medicine name before saving.", parent=dialog)
+                name_entry.focus_set()
+                return
+            if not med_id or len(med_id) != 3 or not med_id.isdigit():
+                messagebox.showerror("ID unavailable", "A unique three-digit medicine ID could not be assigned.", parent=dialog)
+                return
+            try:
+                pills_left = optional_number(left_var.get(), "Pills left")
+                pills_per_day = optional_number(per_day_var.get(), "Pills per day")
+            except ValueError as exc:
+                messagebox.showerror("Invalid number", str(exc), parent=dialog)
+                return
+
+            family_id = str(self.current_family.get("family_id", ""))
+            if member_var.get() == "All":
+                assigned_members = [str(m.get("member_id")) for m in members]
+                member_id = "all"
+            else:
+                selected_member = member_lookup.get(member_var.get())
+                if selected_member is None:
+                    assigned_members = []
+                    member_id = "all"
+                else:
+                    member_id = selected_member.get("member_id")
+                    assigned_members = [str(member_id)]
+
+            record = {
+                "family_id": family_id,
+                "medicine_id": med_id,
+                "medicine_name": name,
+                "member_id": member_id,
+                "member_ids": assigned_members,
+                "pills_left": pills_left,
+                "pills_per_day": pills_per_day
+            }
+            if med is None:
+                self.medicines.insert(0, record)
+            else:
+                med.clear()
+                med.update(record)
+                # Move edited medicine to the top as well.
+                self.medicines.remove(med)
+                self.medicines.insert(0, med)
+            try:
+                self._save_medicine_data()
+            except OSError as exc:
+                messagebox.showerror("Save failed", f"Could not save medicine data:\n{exc}", parent=dialog)
+                return
+            # Newly saved or edited medicines should appear at the top.
+            self.medicine_sort = None
+            self.medicine_filter = None
+            if hasattr(self, "med_filter_entry"):
+                self.med_filter_entry.delete(0, "end")
+            dialog.destroy()
+            self.refresh_tables()
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(buttons, text="Save Medicine", command=save_medicine).pack(side="right")
+        name_entry.focus_set()
+
+    def delete_selected_medicines(self):
+        selected = self.medicine_table.selection()
+        if not selected:
+            messagebox.showinfo("No selection", "Select one or more medicines to delete.")
+            return
+        rows = getattr(self, "_medicine_rows", {})
+        selected_meds = [rows[item] for item in selected if item in rows]
+        if not selected_meds:
+            return
+        names = ", ".join(str(m.get("medicine_name", "Medicine")) for m in selected_meds)
+        if not messagebox.askyesno("Delete medicine", f"Delete selected medicine(s)?\n{names}"):
+            return
+        selected_objects = {id(m) for m in selected_meds}
+        self.medicines = [m for m in self.medicines if id(m) not in selected_objects]
+        try:
+            self._save_medicine_data()
+        except OSError as exc:
+            messagebox.showerror("Save failed", f"Could not save medicine data:\n{exc}")
+            self.medicines = load_json("medicine.json")
+            self.members = load_json("member.json")
+        self.refresh_tables()
+
+    def apply_medicine_view(self):
+        column_map = {
+            "Medicine ID": "medicine_id", "Medicine": "medicine_name",
+            "Member": "member", "Pills left": "pills_left",
+            "Pills per day": "pills_per_day"
+        }
+        column = column_map.get(self.med_column_var.get(), "medicine_name")
+        action = self.med_action_var.get()
+        query = self.med_filter_entry.get().strip().casefold()
+        if action == "Filter contains":
+            self.medicine_filter = (column, query)
+            self.medicine_sort = None
+        else:
+            self.medicine_sort = (column, action == "Sort Z–A")
+            self.medicine_filter = None
+        self.refresh_tables()
+
+    def clear_medicine_view(self):
+        self.medicine_sort = None
+        self.medicine_filter = None
+        self.med_filter_entry.delete(0, "end")
+        self.refresh_tables()
+
+    def _medicine_sort_value(self, med, column):
+        if column == "member":
+            return self._medicine_member_label(med).casefold()
+        value = med.get(column, "")
+        try:
+            return (0, float(value)) if value != "" else (1, 0)
+        except (TypeError, ValueError):
+            return (0, str(value).casefold())
 
     def build_groceries(self):
         # 1. To-Do List Frame (Groceries to buy)
@@ -391,18 +689,8 @@ class FamilyApp:
         stock_frame = ttk.LabelFrame(self.groceries_tab, text=" Stock for basic groceries ", padding=10)
         stock_frame.pack(fill="both", expand=True)
 
-        ttk.Label(stock_frame, text="Add items manually, or drag them between lists to update their status:",
+        ttk.Label(stock_frame, text="Drag items between In Stock and Out of Stock to update location:",
                   foreground="gray").pack(anchor="w", pady=(0, 8))
-
-        stock_add_frame = ttk.Frame(stock_frame)
-        stock_add_frame.pack(fill="x", pady=(0, 8))
-        self.stock_entry = ttk.Entry(stock_add_frame)
-        self.stock_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
-        self.stock_entry.bind("<Return>", lambda e: self.add_stock_item("stock"))
-        ttk.Button(stock_add_frame, text="Add Stock",
-                   command=lambda: self.add_stock_item("stock")).pack(side="left", padx=(0, 5))
-        ttk.Button(stock_add_frame, text="Add Out of Stock",
-                   command=lambda: self.add_stock_item("out_of_stock")).pack(side="left")
 
         tables_container = ttk.Frame(stock_frame)
         tables_container.pack(fill="both", expand=True)
@@ -410,90 +698,20 @@ class FamilyApp:
         # In Stock Box
         stock_subframe = ttk.LabelFrame(tables_container, text="In Stock")
         stock_subframe.pack(side="left", fill="both", expand=True, padx=(0, 5))
-        self.stock_listbox = tk.Listbox(stock_subframe, selectmode="extended", font=("Arial", 11), bg="#222", fg="white")
+        self.stock_listbox = tk.Listbox(stock_subframe, selectmode="single", font=("Arial", 11), bg="#222", fg="white")
         self.stock_listbox.pack(fill="both", expand=True, padx=5, pady=5)
-        ttk.Button(stock_subframe,text="🗑 Delete Selected",
-                   command=lambda: self.delete_stock_items("stock")).pack(fill="x", padx=5, pady=(0, 8), ipady=10)
 
         # Out of Stock Box
         out_subframe = ttk.LabelFrame(tables_container, text="Out of Stock")
         out_subframe.pack(side="right", fill="both", expand=True, padx=(5, 0))
-        self.out_listbox = tk.Listbox(out_subframe, selectmode="extended", font=("Arial", 11), bg="#222", fg="white")
+        self.out_listbox = tk.Listbox(out_subframe, selectmode="single", font=("Arial", 11), bg="#222", fg="white")
         self.out_listbox.pack(fill="both", expand=True, padx=5, pady=5)
-        ttk.Button(out_subframe, text="🗑 Delete Selected",
-                   command=lambda: self.delete_stock_items("out_of_stock")).pack(fill="x", padx=5, pady=(0, 8), ipady=10)
 
         # Bind Drag and Drop Events
         for lb, src in [(self.stock_listbox, "stock"), (self.out_listbox, "out_of_stock")]:
             lb.bind("<ButtonPress-1>", lambda e, s=src, widget=lb: self.start_stock_drag(e, s, widget))
             lb.bind("<B1-Motion>", self.motion_stock_drag)
             lb.bind("<ButtonRelease-1>", self.finish_stock_drag)
-
-    def add_stock_item(self, target_type):
-        if not self.current_family:
-            messagebox.showwarning("Not logged in", "Please log in to a family first.")
-            return
-        item = self.stock_entry.get().strip()
-        if not item:
-            return
-        grocery = self.get_current_family_grocery()
-        grocery.setdefault("stock", [])
-        grocery.setdefault("out_of_stock", [])
-        grocery.setdefault("to_buy", [])
-
-        # An item should exist in only one stock status at a time.
-        other_type = "out_of_stock" if target_type == "stock" else "stock"
-        for values in (grocery["stock"], grocery["out_of_stock"]):
-            values[:] = [value for value in values if value.casefold() != item.casefold()]
-        grocery[target_type].append(item)
-
-        if target_type == "out_of_stock" and not any(
-            value.casefold() == item.casefold() for value in grocery["to_buy"]
-        ):
-            grocery["to_buy"].append(item)
-
-        try:
-            save_json("groceries.json", self.groceries)
-        except OSError as exc:
-            messagebox.showerror("Save failed", f"Could not save groceries:\n{exc}")
-            self.groceries = load_json("groceries.json")
-            return
-        self.stock_entry.delete(0, "end")
-        self.refresh_tables()
-
-    def delete_stock_items(self, list_type):
-        if not self.current_family:
-            return
-        widget = self.stock_listbox if list_type == "stock" else self.out_listbox
-        selected = list(widget.curselection())
-        if not selected:
-            messagebox.showinfo("No Selection", "Select one or more items to delete.")
-            return
-        grocery = self.get_current_family_grocery()
-        items = grocery.setdefault(list_type, [])
-        selected_items = [items[i] for i in selected if i < len(items)]
-        if not messagebox.askyesno(
-            "Delete selected items",
-            "Delete these items from the stock lists?\n\n" + "\n".join(selected_items)
-        ):
-            return
-        selected_names = {item.casefold() for item in selected_items}
-        grocery[list_type] = [
-            item for item in items if item.casefold() not in selected_names
-        ]
-        # If an out-of-stock item is manually deleted, remove it from the checklist too.
-        if list_type == "out_of_stock":
-            grocery["to_buy"] = [
-                item for item in grocery.get("to_buy", [])
-                if item.casefold() not in selected_names
-            ]
-        try:
-            save_json("groceries.json", self.groceries)
-        except OSError as exc:
-            messagebox.showerror("Save failed", f"Could not save groceries:\n{exc}")
-            self.groceries = load_json("groceries.json")
-            return
-        self.refresh_tables()
 
     def start_stock_drag(self, event, source_type, widget):
         index = widget.nearest(event.y)
@@ -529,19 +747,8 @@ class FamilyApp:
 
                 if item in grocery[source]:
                     grocery[source].remove(item)
-                    if item not in grocery[target_type]:
-                        grocery[target_type].append(item)
-                    grocery.setdefault("to_buy", [])
-                    if target_type == "out_of_stock" and item not in grocery["to_buy"]:
-                        grocery["to_buy"].append(item)
-                    elif target_type == "stock":
-                        # Keep checklist membership; checkbox state reflects stock status.
-                        pass
-                    try:
-                        save_json("groceries.json", self.groceries)
-                    except OSError as exc:
-                        messagebox.showerror("Save failed", f"Could not save groceries:\n{exc}")
-                        self.groceries = load_json("groceries.json")
+                    grocery[target_type].append(item)
+                    save_json("groceries.json", self.groceries)
                     self.refresh_tables()
 
         self.dragged_item_info = None
@@ -618,27 +825,6 @@ class FamilyApp:
             self.undo_btn.config(state="disabled", text="Undo Delete")
             self.refresh_todo_list()
 
-    def on_todo_check(self, item, checked):
-        grocery = self.get_current_family_grocery()
-        if grocery is None:
-            return
-        stock = grocery.setdefault("stock", [])
-        out = grocery.setdefault("out_of_stock", [])
-        if checked:
-            out[:] = [value for value in out if value.casefold() != item.casefold()]
-            if not any(value.casefold() == item.casefold() for value in stock):
-                stock.append(item)
-        else:
-            stock[:] = [value for value in stock if value.casefold() != item.casefold()]
-            if not any(value.casefold() == item.casefold() for value in out):
-                out.append(item)
-        try:
-            save_json("groceries.json", self.groceries)
-        except OSError as exc:
-            messagebox.showerror("Save failed", f"Could not save groceries:\n{exc}")
-            self.groceries = load_json("groceries.json")
-        self.refresh_tables()
-
     def refresh_todo_list(self):
         for widget in self.todo_items_frame.winfo_children():
             widget.destroy()
@@ -648,23 +834,11 @@ class FamilyApp:
             return
 
         grocery = self.get_current_family_grocery()
-        # Every out-of-stock item is automatically represented in the checklist.
-        to_buy_items = grocery.setdefault("to_buy", [])
-        for item in grocery.get("out_of_stock", []):
-            if not any(value.casefold() == item.casefold() for value in to_buy_items):
-                to_buy_items.append(item)
-        # Stocked checklist items remain checked, so unchecking them can return them to out-of-stock.
-        for item in grocery.get("stock", []):
-            if any(value.casefold() == item.casefold() for value in to_buy_items):
-                pass
+        to_buy_items = grocery.get("to_buy", [])
 
-        stock_names = {item.casefold() for item in grocery.get("stock", [])}
         for idx, item in enumerate(to_buy_items):
-            var = tk.BooleanVar(value=item.casefold() in stock_names)
-            chk = ttk.Checkbutton(
-                self.todo_items_frame, text=item, variable=var,
-                command=lambda name=item, v=var: self.on_todo_check(name, v.get())
-            )
+            var = tk.BooleanVar(value=False)
+            chk = ttk.Checkbutton(self.todo_items_frame, text=item, variable=var)
             chk.pack(anchor="w", pady=2)
             self.todo_check_vars.append((idx, var))
 
@@ -686,18 +860,56 @@ class FamilyApp:
             m for m in self.members
             if str(m.get("family_id")) == family_id
         ]
-        member_names = {m.get("member_id"): m.get("member_name", "Unknown")
-                        for m in family_members}
+
+        # Give legacy medicine records a stable three-digit ID.
+        changed_ids = False
+        existing_codes = {
+            str(m.get("medicine_id", "")) for m in self.medicines
+            if str(m.get("medicine_id", "")).isdigit()
+        }
+        for med in self.medicines:
+            code = str(med.get("medicine_id", ""))
+            if len(code) != 3 or not code.isdigit() or sum(1 for x in self.medicines if str(x.get("medicine_id", "")) == code) > 1:
+                new_code = self._next_medicine_id()
+                if new_code:
+                    med["medicine_id"] = new_code
+                    changed_ids = True
+        if changed_ids:
+            try:
+                self._save_medicine_data()
+            except OSError:
+                pass
 
         self.clear_table(self.medicine_table)
-        for med in self.medicines:
-            if str(med.get("family_id")) == family_id:
-                self.medicine_table.insert("", "end", values=(
-                    med.get("medicine_name", ""),
-                    member_names.get(med.get("member_id"), "Unknown member"),
-                    med.get("pills_left", 0),
-                    med.get("pills_per_day", 0),
-                ))
+        self._medicine_rows = {}
+        family_meds = [
+            med for med in self.medicines
+            if str(med.get("family_id")) == family_id
+        ]
+        if self.medicine_filter:
+            column, query = self.medicine_filter
+            def filter_value(med):
+                if column == "member":
+                    return self._medicine_member_label(med)
+                return med.get(column, "")
+            family_meds = [
+                med for med in family_meds
+                if query in str(filter_value(med)).casefold()
+            ]
+        if self.medicine_sort:
+            column, reverse = self.medicine_sort
+            family_meds.sort(key=lambda med: self._medicine_sort_value(med, column),
+                             reverse=reverse)
+
+        for med in family_meds:
+            iid = self.medicine_table.insert("", "end", values=(
+                med.get("medicine_id", ""),
+                med.get("medicine_name", ""),
+                self._medicine_member_label(med),
+                med.get("pills_left", ""),
+                med.get("pills_per_day", "")
+            ))
+            self._medicine_rows[iid] = med
 
         # Refresh Groceries Stock & Out of Stock
         self.stock_listbox.delete(0, "end")
@@ -712,15 +924,6 @@ class FamilyApp:
         for item in grocery.get("out_of_stock", []):
             self.out_listbox.insert("end", item)
 
-        # Keep checklist data in sync with all out-of-stock items.
-        to_buy = grocery.setdefault("to_buy", [])
-        for item in grocery.get("out_of_stock", []):
-            if not any(value.casefold() == item.casefold() for value in to_buy):
-                to_buy.append(item)
-        try:
-            save_json("groceries.json", self.groceries)
-        except OSError as exc:
-            messagebox.showerror("Save failed", f"Could not save groceries:\n{exc}")
         self.refresh_todo_list()
 
     def add_member_dialog(self):
