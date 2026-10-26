@@ -391,8 +391,18 @@ class FamilyApp:
         stock_frame = ttk.LabelFrame(self.groceries_tab, text=" Stock for basic groceries ", padding=10)
         stock_frame.pack(fill="both", expand=True)
 
-        ttk.Label(stock_frame, text="Drag items between In Stock and Out of Stock to update location:",
+        ttk.Label(stock_frame, text="Add items manually, or drag them between lists to update their status:",
                   foreground="gray").pack(anchor="w", pady=(0, 8))
+
+        stock_add_frame = ttk.Frame(stock_frame)
+        stock_add_frame.pack(fill="x", pady=(0, 8))
+        self.stock_entry = ttk.Entry(stock_add_frame)
+        self.stock_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self.stock_entry.bind("<Return>", lambda e: self.add_stock_item("stock"))
+        ttk.Button(stock_add_frame, text="Add Stock",
+                   command=lambda: self.add_stock_item("stock")).pack(side="left", padx=(0, 5))
+        ttk.Button(stock_add_frame, text="Add Out of Stock",
+                   command=lambda: self.add_stock_item("out_of_stock")).pack(side="left")
 
         tables_container = ttk.Frame(stock_frame)
         tables_container.pack(fill="both", expand=True)
@@ -400,20 +410,90 @@ class FamilyApp:
         # In Stock Box
         stock_subframe = ttk.LabelFrame(tables_container, text="In Stock")
         stock_subframe.pack(side="left", fill="both", expand=True, padx=(0, 5))
-        self.stock_listbox = tk.Listbox(stock_subframe, selectmode="single", font=("Arial", 11), bg="#222", fg="white")
+        self.stock_listbox = tk.Listbox(stock_subframe, selectmode="extended", font=("Arial", 11), bg="#222", fg="white")
         self.stock_listbox.pack(fill="both", expand=True, padx=5, pady=5)
+        ttk.Button(stock_subframe,text="🗑 Delete Selected",
+                   command=lambda: self.delete_stock_items("stock")).pack(fill="x", padx=5, pady=(0, 8), ipady=10)
 
         # Out of Stock Box
         out_subframe = ttk.LabelFrame(tables_container, text="Out of Stock")
         out_subframe.pack(side="right", fill="both", expand=True, padx=(5, 0))
-        self.out_listbox = tk.Listbox(out_subframe, selectmode="single", font=("Arial", 11), bg="#222", fg="white")
+        self.out_listbox = tk.Listbox(out_subframe, selectmode="extended", font=("Arial", 11), bg="#222", fg="white")
         self.out_listbox.pack(fill="both", expand=True, padx=5, pady=5)
+        ttk.Button(out_subframe, text="🗑 Delete Selected",
+                   command=lambda: self.delete_stock_items("out_of_stock")).pack(fill="x", padx=5, pady=(0, 8), ipady=10)
 
         # Bind Drag and Drop Events
         for lb, src in [(self.stock_listbox, "stock"), (self.out_listbox, "out_of_stock")]:
             lb.bind("<ButtonPress-1>", lambda e, s=src, widget=lb: self.start_stock_drag(e, s, widget))
             lb.bind("<B1-Motion>", self.motion_stock_drag)
             lb.bind("<ButtonRelease-1>", self.finish_stock_drag)
+
+    def add_stock_item(self, target_type):
+        if not self.current_family:
+            messagebox.showwarning("Not logged in", "Please log in to a family first.")
+            return
+        item = self.stock_entry.get().strip()
+        if not item:
+            return
+        grocery = self.get_current_family_grocery()
+        grocery.setdefault("stock", [])
+        grocery.setdefault("out_of_stock", [])
+        grocery.setdefault("to_buy", [])
+
+        # An item should exist in only one stock status at a time.
+        other_type = "out_of_stock" if target_type == "stock" else "stock"
+        for values in (grocery["stock"], grocery["out_of_stock"]):
+            values[:] = [value for value in values if value.casefold() != item.casefold()]
+        grocery[target_type].append(item)
+
+        if target_type == "out_of_stock" and not any(
+            value.casefold() == item.casefold() for value in grocery["to_buy"]
+        ):
+            grocery["to_buy"].append(item)
+
+        try:
+            save_json("groceries.json", self.groceries)
+        except OSError as exc:
+            messagebox.showerror("Save failed", f"Could not save groceries:\n{exc}")
+            self.groceries = load_json("groceries.json")
+            return
+        self.stock_entry.delete(0, "end")
+        self.refresh_tables()
+
+    def delete_stock_items(self, list_type):
+        if not self.current_family:
+            return
+        widget = self.stock_listbox if list_type == "stock" else self.out_listbox
+        selected = list(widget.curselection())
+        if not selected:
+            messagebox.showinfo("No Selection", "Select one or more items to delete.")
+            return
+        grocery = self.get_current_family_grocery()
+        items = grocery.setdefault(list_type, [])
+        selected_items = [items[i] for i in selected if i < len(items)]
+        if not messagebox.askyesno(
+            "Delete selected items",
+            "Delete these items from the stock lists?\n\n" + "\n".join(selected_items)
+        ):
+            return
+        selected_names = {item.casefold() for item in selected_items}
+        grocery[list_type] = [
+            item for item in items if item.casefold() not in selected_names
+        ]
+        # If an out-of-stock item is manually deleted, remove it from the checklist too.
+        if list_type == "out_of_stock":
+            grocery["to_buy"] = [
+                item for item in grocery.get("to_buy", [])
+                if item.casefold() not in selected_names
+            ]
+        try:
+            save_json("groceries.json", self.groceries)
+        except OSError as exc:
+            messagebox.showerror("Save failed", f"Could not save groceries:\n{exc}")
+            self.groceries = load_json("groceries.json")
+            return
+        self.refresh_tables()
 
     def start_stock_drag(self, event, source_type, widget):
         index = widget.nearest(event.y)
@@ -449,8 +529,19 @@ class FamilyApp:
 
                 if item in grocery[source]:
                     grocery[source].remove(item)
-                    grocery[target_type].append(item)
-                    save_json("groceries.json", self.groceries)
+                    if item not in grocery[target_type]:
+                        grocery[target_type].append(item)
+                    grocery.setdefault("to_buy", [])
+                    if target_type == "out_of_stock" and item not in grocery["to_buy"]:
+                        grocery["to_buy"].append(item)
+                    elif target_type == "stock":
+                        # Keep checklist membership; checkbox state reflects stock status.
+                        pass
+                    try:
+                        save_json("groceries.json", self.groceries)
+                    except OSError as exc:
+                        messagebox.showerror("Save failed", f"Could not save groceries:\n{exc}")
+                        self.groceries = load_json("groceries.json")
                     self.refresh_tables()
 
         self.dragged_item_info = None
@@ -527,6 +618,27 @@ class FamilyApp:
             self.undo_btn.config(state="disabled", text="Undo Delete")
             self.refresh_todo_list()
 
+    def on_todo_check(self, item, checked):
+        grocery = self.get_current_family_grocery()
+        if grocery is None:
+            return
+        stock = grocery.setdefault("stock", [])
+        out = grocery.setdefault("out_of_stock", [])
+        if checked:
+            out[:] = [value for value in out if value.casefold() != item.casefold()]
+            if not any(value.casefold() == item.casefold() for value in stock):
+                stock.append(item)
+        else:
+            stock[:] = [value for value in stock if value.casefold() != item.casefold()]
+            if not any(value.casefold() == item.casefold() for value in out):
+                out.append(item)
+        try:
+            save_json("groceries.json", self.groceries)
+        except OSError as exc:
+            messagebox.showerror("Save failed", f"Could not save groceries:\n{exc}")
+            self.groceries = load_json("groceries.json")
+        self.refresh_tables()
+
     def refresh_todo_list(self):
         for widget in self.todo_items_frame.winfo_children():
             widget.destroy()
@@ -536,11 +648,23 @@ class FamilyApp:
             return
 
         grocery = self.get_current_family_grocery()
-        to_buy_items = grocery.get("to_buy", [])
+        # Every out-of-stock item is automatically represented in the checklist.
+        to_buy_items = grocery.setdefault("to_buy", [])
+        for item in grocery.get("out_of_stock", []):
+            if not any(value.casefold() == item.casefold() for value in to_buy_items):
+                to_buy_items.append(item)
+        # Stocked checklist items remain checked, so unchecking them can return them to out-of-stock.
+        for item in grocery.get("stock", []):
+            if any(value.casefold() == item.casefold() for value in to_buy_items):
+                pass
 
+        stock_names = {item.casefold() for item in grocery.get("stock", [])}
         for idx, item in enumerate(to_buy_items):
-            var = tk.BooleanVar(value=False)
-            chk = ttk.Checkbutton(self.todo_items_frame, text=item, variable=var)
+            var = tk.BooleanVar(value=item.casefold() in stock_names)
+            chk = ttk.Checkbutton(
+                self.todo_items_frame, text=item, variable=var,
+                command=lambda name=item, v=var: self.on_todo_check(name, v.get())
+            )
             chk.pack(anchor="w", pady=2)
             self.todo_check_vars.append((idx, var))
 
@@ -588,6 +712,15 @@ class FamilyApp:
         for item in grocery.get("out_of_stock", []):
             self.out_listbox.insert("end", item)
 
+        # Keep checklist data in sync with all out-of-stock items.
+        to_buy = grocery.setdefault("to_buy", [])
+        for item in grocery.get("out_of_stock", []):
+            if not any(value.casefold() == item.casefold() for value in to_buy):
+                to_buy.append(item)
+        try:
+            save_json("groceries.json", self.groceries)
+        except OSError as exc:
+            messagebox.showerror("Save failed", f"Could not save groceries:\n{exc}")
         self.refresh_todo_list()
 
     def add_member_dialog(self):
