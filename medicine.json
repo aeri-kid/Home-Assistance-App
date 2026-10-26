@@ -1,23 +1,56 @@
 [
     {
         "family_id": "F001",
-        "medicine_name": "Vitamin D",
-        "member_id": "M001",
-        "pills_left": 20,
-        "pills_per_day": 1
+        "medicine_id": "104",
+        "medicine_name": "Para-Cap",
+        "member_id": 2,
+        "member_ids": [
+            "2"
+        ],
+        "pills_left": "",
+        "pills_per_day": ""
     },
     {
         "family_id": "F001",
-        "medicine_name": "Pain relief tablets",
-        "member_id": "M002",
-        "pills_left": 12,
-        "pills_per_day": 2
+        "medicine_id": "101",
+        "medicine_name": "Enervon-C",
+        "member_id": "all",
+        "member_ids": [
+            "1",
+            "2"
+        ],
+        "pills_left": 30,
+        "pills_per_day": ""
+    },
+    {
+        "family_id": "F001",
+        "medicine_id": "100",
+        "medicine_name": "Vitamin B",
+        "member_id": "all",
+        "member_ids": [
+            "1",
+            "2"
+        ],
+        "pills_left": 10,
+        "pills_per_day": ""
+    },
+    {
+        "family_id": "F001",
+        "medicine_id": "103",
+        "medicine_name": "DLT",
+        "member_id": 1,
+        "member_ids": [
+            "1"
+        ],
+        "pills_left": "",
+        "pills_per_day": ""
     },
     {
         "family_id": "F002",
         "medicine_name": "Vitamin C",
         "member_id": "M003",
         "pills_left": 30,
-        "pills_per_day": 1
+        "pills_per_day": 1,
+        "medicine_id": "102"
     }
 ]
