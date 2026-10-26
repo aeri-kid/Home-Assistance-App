@@ -7,11 +7,11 @@
             "Milk"
         ],
         "out_of_stock": [
-            "Bread",
-            "Cooking oil"
+            "Coconut Oil"
         ],
-        "to_buy":[
-
+        "to_buy": [
+            "Coconut Oil",
+            "sugar"
         ]
     },
     {
