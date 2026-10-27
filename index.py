@@ -1,5 +1,8 @@
 import json
+import calendar
+from datetime import date, datetime
 import tkinter as tk
+from tkinter import simpledialog
 from tkinter import ttk, messagebox
 from pathlib import Path
 
@@ -136,9 +139,11 @@ class FamilyApp:
 
     def start_drag(self, member):
         self.dragged_member = member
+        self.drag_moved = False
         self.trash.configure(bg="#7A1515")
 
     def drag_motion(self, event):
+        self.drag_moved = True
         x, y = self.root.winfo_pointerxy()
         target = self.root.winfo_containing(x, y)
 
@@ -156,6 +161,8 @@ class FamilyApp:
 
         if target is self.trash:
             self.drop_on_trash(event)
+        elif not getattr(self, "drag_moved", False):
+            self.ask_member_pin(self.dragged_member)
 
         self.dragged_member = None
         self.trash.configure(bg=CARD)
@@ -206,6 +213,320 @@ class FamilyApp:
             "Profile deleted",
             f"{name} was deleted successfully."
         )
+
+    def ask_member_pin(self, member):
+        if not member or not self.current_family:
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Member PIN")
+        dialog.configure(bg=BG)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        tk.Label(dialog, text=f"{member.get('avatar', '👤')}  {member.get('member_name', 'Member')}",
+                 bg=BG, fg="white", font=("Arial", 18, "bold")).pack(padx=24, pady=(20, 8))
+        tk.Label(dialog, text="Enter your 4-digit PIN to continue", bg=BG, fg="white").pack(padx=24)
+        pin_entry = tk.Entry(dialog, show="*", justify="center", font=("Arial", 16), width=12)
+        pin_entry.pack(padx=24, pady=12)
+
+        def verify(event=None):
+            if pin_entry.get() == str(member.get("pin", "")):
+                dialog.destroy()
+                self.open_member_dashboard(member)
+            else:
+                messagebox.showerror("Incorrect PIN", "That PIN is incorrect. Please try again.", parent=dialog)
+                pin_entry.delete(0, "end")
+                pin_entry.focus_set()
+        tk.Button(dialog, text="UNLOCK PROFILE", command=verify, bg=ACCENT, fg="white",
+                  relief="flat", padx=16, pady=8).pack(padx=24, pady=(0, 20))
+        pin_entry.bind("<Return>", verify)
+        pin_entry.focus_set()
+
+    def open_member_dashboard(self, member):
+        """Open a separate, PIN-protected member dashboard."""
+        family = self.current_family
+        family_id = str(family.get("family_id", ""))
+        member_id = str(member.get("member_id", ""))
+        schedule_file = "schedule.json"
+        dashboard = tk.Toplevel(self.root)
+        dashboard.title(f"{member.get('member_name', 'Member')} — Personal Dashboard")
+        dashboard.geometry("1120x760")
+        dashboard.minsize(900, 650)
+        dashboard.configure(bg="#F3F5FC")
+        dashboard.protocol("WM_DELETE_WINDOW", dashboard.destroy)
+
+        selected_date = {"value": date.today()}
+        shown_month = {"year": date.today().year, "month": date.today().month}
+        schedules = load_json(schedule_file) if (DATA_DIR / schedule_file).exists() else []
+        if not isinstance(schedules, list):
+            schedules = []
+
+        def member_tasks(day_string=None):
+            return [item for item in schedules
+                    if str(item.get("family_id")) == family_id
+                    and str(item.get("member_id")) == member_id
+                    and (day_string is None or item.get("date") == day_string)]
+
+        top = tk.Frame(dashboard, bg="#F3F5FC")
+        top.pack(fill="x", padx=24, pady=(18, 8))
+        tk.Label(top, text=f"{member.get('avatar', '👤')}  {member.get('member_name', 'Member')}",
+                 bg="#F3F5FC", fg="#171923", font=("Arial", 24, "bold")).pack(side="left")
+
+        def logout():
+            dashboard.destroy()
+            self.render_profiles()
+            self.tabs.select(self.members_tab)
+        tk.Button(top, text="Log Out", command=logout, bg=ACCENT, fg="white",
+                  relief="flat", padx=18, pady=8).pack(side="right")
+        tk.Label(dashboard, text=family.get("family_name", "Family"), bg="#F3F5FC",
+                 fg="#626778", font=("Arial", 11)).pack(anchor="w", padx=28)
+
+        content = tk.Frame(dashboard, bg="#F3F5FC")
+        content.pack(fill="both", expand=True, padx=22, pady=14)
+        left = tk.Frame(content, bg="white", highlightbackground="#D9DDE8", highlightthickness=1)
+        left.pack(side="left", fill="y", padx=(0, 14), ipadx=12, ipady=12)
+        right = tk.Frame(content, bg="#F3F5FC")
+        right.pack(side="left", fill="both", expand=True)
+
+        detail_labels = {}
+        detail_frame = tk.Frame(left, bg="white", padx=18, pady=18)
+        detail_frame.pack(fill="x")
+        tk.Label(detail_frame, text="Personal Details", bg="white", fg="#171923",
+                 font=("Arial", 16, "bold")).pack(anchor="w", pady=(0, 14))
+        fields = [("birthday", "Birthday"), ("age", "Age"), ("job", "Job"), ("hobby", "Hobby")]
+        for key, label in fields:
+            tk.Label(detail_frame, text=label, bg="white", fg="#72778A",
+                     font=("Arial", 10, "bold")).pack(anchor="w", pady=(5, 0))
+            value = tk.Label(detail_frame, text=str(member.get(key, "—") or "—"), bg="white",
+                             fg="#202333", font=("Arial", 11), wraplength=220, justify="left")
+            value.pack(anchor="w", pady=(1, 4))
+            detail_labels[key] = value
+
+        def edit_details():
+            edit = tk.Toplevel(dashboard)
+            edit.title("Edit Personal Details")
+            edit.transient(dashboard)
+            edit.grab_set()
+            body = ttk.Frame(edit, padding=16)
+            body.pack(fill="both", expand=True)
+            entries = {}
+            for row, (key, label) in enumerate(fields):
+                ttk.Label(body, text=label + ":").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=6)
+                ent = ttk.Entry(body, width=32)
+                ent.insert(0, str(member.get(key, "") or ""))
+                ent.grid(row=row, column=1, pady=6)
+                entries[key] = ent
+            def save_details():
+                birthday = entries["birthday"].get().strip()
+                if birthday:
+                    try:
+                        datetime.strptime(birthday, "%Y-%m-%d")
+                    except ValueError:
+                        messagebox.showerror("Invalid birthday", "Use YYYY-MM-DD for the birthday.", parent=edit)
+                        return
+                old = {key: member.get(key) for key, _ in fields}
+                for key, _ in fields:
+                    member[key] = entries[key].get().strip()
+                try:
+                    save_json("member.json", self.members)
+                except OSError as exc:
+                    for key, value in old.items():
+                        if value is None:
+                            member.pop(key, None)
+                        else:
+                            member[key] = value
+                    messagebox.showerror("Save failed", str(exc), parent=edit)
+                    return
+                for key, _ in fields:
+                    value = member.get(key, "") or "—"
+                    detail_labels[key].config(text=value)
+                edit.destroy()
+            ttk.Button(body, text="Save", command=save_details).grid(row=len(fields), column=1, sticky="e", pady=(12, 0))
+        ttk.Button(detail_frame, text="Edit Details", command=edit_details).pack(anchor="w", pady=(12, 0))
+
+        # Calendar panel
+        calendar_frame = tk.Frame(right, bg="white", highlightbackground="#D9DDE8", highlightthickness=1)
+        calendar_frame.pack(fill="both", expand=True)
+        month_header = tk.Frame(calendar_frame, bg="white")
+        month_header.pack(fill="x", padx=12, pady=10)
+        month_title = tk.Label(month_header, text="", bg="white", fg="#171923", font=("Arial", 15, "bold"))
+        month_title.pack(side="left", expand=True)
+        tk.Button(month_header, text="‹", command=lambda: shift_month(-1), bg="white", relief="flat").pack(side="left")
+        tk.Button(month_header, text="›", command=lambda: shift_month(1), bg="white", relief="flat").pack(side="right")
+        days_frame = tk.Frame(calendar_frame, bg="white")
+        days_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        def refresh_tasks():
+            task_list.delete(0, "end")
+            day_string = selected_date["value"].isoformat()
+            selected_label.config(text=f"Selected day: {day_string}")
+            for task in member_tasks(day_string):
+                status = "✓" if task.get("completed") else "○"
+                task_list.insert("end", f"{status}  {task.get('title', 'Task')}")
+            refresh_medicines()
+
+        def choose_day(day):
+            selected_date["value"] = date(shown_month["year"], shown_month["month"], day)
+            refresh_calendar()
+            refresh_tasks()
+
+        def refresh_calendar():
+            for w in days_frame.winfo_children():
+                w.destroy()
+            month_title.config(text=f"{calendar.month_name[shown_month['month']]} {shown_month['year']}")
+            for col, name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
+                tk.Label(days_frame, text=name, bg="white", fg="#70768A", font=("Arial", 9, "bold")).grid(row=0, column=col, sticky="nsew", padx=2, pady=3)
+                days_frame.grid_columnconfigure(col, weight=1)
+            cal = calendar.Calendar(firstweekday=0)
+            for row, week in enumerate(cal.monthdayscalendar(shown_month["year"], shown_month["month"]), start=1):
+                days_frame.grid_rowconfigure(row, weight=1)
+                for col, day in enumerate(week):
+                    if day:
+                        is_selected = selected_date["value"] == date(shown_month["year"], shown_month["month"], day)
+                        has_tasks = bool(member_tasks(date(shown_month["year"], shown_month["month"], day).isoformat()))
+                        label = f"{day}{' •' if has_tasks else ''}"
+                        tk.Button(days_frame, text=label, command=lambda d=day: choose_day(d),
+                                  bg=ACCENT if is_selected else ("#E8EBF5" if has_tasks else "white"),
+                                  fg="white" if is_selected else "#202333", relief="flat").grid(row=row, column=col, sticky="nsew", padx=2, pady=2, ipady=5)
+
+        def shift_month(delta):
+            month = shown_month["month"] + delta
+            year = shown_month["year"]
+            if month < 1:
+                month, year = 12, year - 1
+            elif month > 12:
+                month, year = 1, year + 1
+            shown_month.update(year=year, month=month)
+            refresh_calendar()
+        def previous_month(): shift_month(-1)
+        def next_month(): shift_month(1)
+
+        task_frame = tk.Frame(right, bg="white", highlightbackground="#D9DDE8", highlightthickness=1)
+        task_frame.pack(fill="both", expand=True, pady=(12, 0))
+        selected_label = tk.Label(task_frame, text="", bg="white", fg="#171923", font=("Arial", 14, "bold"))
+        selected_label.pack(anchor="w", padx=14, pady=(12, 4))
+        tk.Label(task_frame, text="Schedule", bg="white", fg="#6E7385").pack(anchor="w", padx=14)
+        task_list = tk.Listbox(task_frame, height=5, font=("Arial", 11), activestyle="none", relief="flat")
+        task_list.pack(fill="both", expand=True, padx=12, pady=6)
+        task_controls = tk.Frame(task_frame, bg="white")
+        task_controls.pack(fill="x", padx=12, pady=(0, 10))
+
+        def persist_schedule():
+            try:
+                save_json(schedule_file, schedules)
+                return True
+            except OSError as exc:
+                messagebox.showerror("Save failed", f"Could not save schedule: {exc}", parent=dashboard)
+                return False
+
+        def add_task():
+            dialog = tk.Toplevel(dashboard)
+            dialog.title("Add Schedule Task")
+            dialog.transient(dashboard)
+            dialog.grab_set()
+            body = ttk.Frame(dialog, padding=16)
+            body.pack(fill="both", expand=True)
+            ttk.Label(body, text="Task:").grid(row=0, column=0, sticky="w", pady=6)
+            title_entry = ttk.Entry(body, width=34)
+            title_entry.grid(row=0, column=1, pady=6)
+            ttk.Label(body, text="Date (YYYY-MM-DD):").grid(row=1, column=0, sticky="w", pady=6)
+            date_entry = ttk.Entry(body, width=34)
+            date_entry.insert(0, selected_date["value"].isoformat())
+            date_entry.grid(row=1, column=1, pady=6)
+            def save_task():
+                title = title_entry.get().strip()
+                try:
+                    task_date = datetime.strptime(date_entry.get().strip(), "%Y-%m-%d").date().isoformat()
+                except ValueError:
+                    messagebox.showerror("Invalid date", "Enter a valid date as YYYY-MM-DD.", parent=dialog)
+                    return
+                if not title:
+                    messagebox.showerror("Missing task", "Please enter a task name.", parent=dialog)
+                    return
+                item = {"family_id": family_id, "member_id": member_id, "date": task_date,
+                        "title": title, "completed": False}
+                schedules.append(item)
+                if not persist_schedule():
+                    schedules.remove(item)
+                    return
+                selected_date["value"] = date.fromisoformat(task_date)
+                shown_month.update(year=selected_date["value"].year, month=selected_date["value"].month)
+                dialog.destroy()
+                refresh_calendar()
+                refresh_tasks()
+            ttk.Button(body, text="Save Task", command=save_task).grid(row=2, column=1, sticky="e", pady=(10, 0))
+            title_entry.focus_set()
+
+        def selected_task():
+            index = task_list.curselection()
+            day_tasks = member_tasks(selected_date["value"].isoformat())
+            return day_tasks[index[0]] if index and index[0] < len(day_tasks) else None
+
+        def edit_task():
+            item = selected_task()
+            if not item:
+                messagebox.showinfo("Select a task", "Select a task to edit.", parent=dashboard)
+                return
+            new_title = simpledialog.askstring("Edit Task", "Task name:", initialvalue=item.get("title", ""), parent=dashboard)
+            if new_title is None or not new_title.strip():
+                return
+            old = item.get("title")
+            item["title"] = new_title.strip()
+            if not persist_schedule(): item["title"] = old
+            refresh_calendar(); refresh_tasks()
+
+        def toggle_task():
+            item = selected_task()
+            if not item:
+                messagebox.showinfo("Select a task", "Select a task to mark complete.", parent=dashboard)
+                return
+            item["completed"] = not bool(item.get("completed"))
+            if not persist_schedule(): item["completed"] = not item["completed"]
+            refresh_calendar(); refresh_tasks()
+
+        def delete_task():
+            item = selected_task()
+            if not item:
+                messagebox.showinfo("Select a task", "Select a task to delete.", parent=dashboard)
+                return
+            if not messagebox.askyesno("Delete task", f"Delete '{item.get('title', 'Task')}'?", parent=dashboard):
+                return
+            schedules.remove(item)
+            if not persist_schedule(): schedules.append(item)
+            refresh_calendar(); refresh_tasks()
+
+        ttk.Button(task_controls, text="+ Add", command=add_task).pack(side="left", padx=(0, 6))
+        ttk.Button(task_controls, text="Edit", command=edit_task).pack(side="left", padx=6)
+        ttk.Button(task_controls, text="Complete / Undo", command=toggle_task).pack(side="left", padx=6)
+        ttk.Button(task_controls, text="Delete", command=delete_task).pack(side="right")
+
+        med_frame = tk.Frame(left, bg="white", padx=18, pady=12)
+        med_frame.pack(fill="both", expand=True)
+        tk.Label(med_frame, text="My Medicines", bg="white", fg="#171923",
+                 font=("Arial", 15, "bold")).pack(anchor="w", pady=(0, 8))
+        med_table = ttk.Treeview(med_frame, columns=("name", "left", "daily"), show="headings", height=6)
+        for col, heading, width in [("name", "Medicine", 150), ("left", "Pills left", 70), ("daily", "Per day", 70)]:
+            med_table.heading(col, text=heading)
+            med_table.column(col, width=width, anchor="w")
+        med_table.pack(fill="both", expand=True)
+
+        def refresh_medicines():
+            med_table.delete(*med_table.get_children())
+            for med in self.medicines:
+                if str(med.get("family_id")) != family_id:
+                    continue
+                assigned = med.get("member_ids")
+                if isinstance(assigned, list):
+                    matches = member_id in {str(x) for x in assigned} or not assigned
+                else:
+                    med_member = str(med.get("member_id", ""))
+                    matches = med_member == member_id or med_member.casefold() == "all"
+                if matches:
+                    med_table.insert("", "end", values=(med.get("medicine_name", ""),
+                        med.get("pills_left", "—"), med.get("pills_per_day", "—")))
+
+        refresh_calendar()
+        refresh_tasks()
 
     def __init__(self, root):
         self.root = root
