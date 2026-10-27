@@ -356,13 +356,32 @@ class FamilyApp:
         days_frame = tk.Frame(calendar_frame, bg="white")
         days_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
+        task_check_vars = []
+
         def refresh_tasks():
-            task_list.delete(0, "end")
+            for widget in task_items_frame.winfo_children():
+                widget.destroy()
+            task_check_vars.clear()
+
             day_string = selected_date["value"].isoformat()
             selected_label.config(text=f"Selected day: {day_string}")
-            for task in member_tasks(day_string):
-                status = "✓" if task.get("completed") else "○"
-                task_list.insert("end", f"{status}  {task.get('title', 'Task')}")
+            day_tasks = member_tasks(day_string)
+
+            for task in day_tasks:
+                var = tk.BooleanVar(value=bool(task.get("completed")))
+                def on_toggle(t=task, v=var):
+                    t["completed"] = v.get()
+                    persist_schedule()
+                    refresh_calendar()
+                
+                chk = tk.Checkbutton(
+                    task_items_frame, text=task.get("title", "Task"),
+                    variable=var, command=on_toggle, bg="white",
+                    fg="#202333", activebackground="white",
+                    font=("Arial", 11), anchor="w"
+                )
+                chk.pack(fill="x", anchor="w", pady=2)
+                task_check_vars.append((task, var))
             refresh_medicines()
 
         def choose_day(day):
@@ -398,16 +417,32 @@ class FamilyApp:
                 month, year = 1, year + 1
             shown_month.update(year=year, month=month)
             refresh_calendar()
-        def previous_month(): shift_month(-1)
-        def next_month(): shift_month(1)
 
         task_frame = tk.Frame(right, bg="white", highlightbackground="#D9DDE8", highlightthickness=1)
         task_frame.pack(fill="both", expand=True, pady=(12, 0))
         selected_label = tk.Label(task_frame, text="", bg="white", fg="#171923", font=("Arial", 14, "bold"))
         selected_label.pack(anchor="w", padx=14, pady=(12, 4))
         tk.Label(task_frame, text="Schedule", bg="white", fg="#6E7385").pack(anchor="w", padx=14)
-        task_list = tk.Listbox(task_frame, height=5, font=("Arial", 11), activestyle="none", relief="flat")
-        task_list.pack(fill="both", expand=True, padx=12, pady=6)
+
+        # Scrollable Task Container for Checkbox Checklist
+        task_canvas_container = tk.Frame(task_frame, bg="white")
+        task_canvas_container.pack(fill="both", expand=True, padx=12, pady=6)
+        
+        task_canvas = tk.Canvas(task_canvas_container, bg="white", highlightthickness=0)
+        task_scrollbar = ttk.Scrollbar(task_canvas_container, orient="vertical", command=task_canvas.yview)
+        task_items_frame = tk.Frame(task_canvas, bg="white")
+
+        task_items_frame.bind(
+            "<Configure>",
+            lambda e: task_canvas.configure(scrollregion=task_canvas.bbox("all"))
+        )
+
+        task_canvas.create_window((0, 0), window=task_items_frame, anchor="nw")
+        task_canvas.configure(yscrollcommand=task_scrollbar.set)
+
+        task_canvas.pack(side="left", fill="both", expand=True)
+        task_scrollbar.pack(side="right", fill="y")
+
         task_controls = tk.Frame(task_frame, bg="white")
         task_controls.pack(fill="x", padx=12, pady=(0, 10))
 
@@ -457,16 +492,12 @@ class FamilyApp:
             ttk.Button(body, text="Save Task", command=save_task).grid(row=2, column=1, sticky="e", pady=(10, 0))
             title_entry.focus_set()
 
-        def selected_task():
-            index = task_list.curselection()
-            day_tasks = member_tasks(selected_date["value"].isoformat())
-            return day_tasks[index[0]] if index and index[0] < len(day_tasks) else None
-
         def edit_task():
-            item = selected_task()
-            if not item:
-                messagebox.showinfo("Select a task", "Select a task to edit.", parent=dashboard)
+            checked_items = [task for task, var in task_check_vars if var.get()]
+            if len(checked_items) != 1:
+                messagebox.showinfo("Select a single task", "Please check exactly one task to edit.", parent=dashboard)
                 return
+            item = checked_items[0]
             new_title = simpledialog.askstring("Edit Task", "Task name:", initialvalue=item.get("title", ""), parent=dashboard)
             if new_title is None or not new_title.strip():
                 return
@@ -475,43 +506,81 @@ class FamilyApp:
             if not persist_schedule(): item["title"] = old
             refresh_calendar(); refresh_tasks()
 
-        def toggle_task():
-            item = selected_task()
-            if not item:
-                messagebox.showinfo("Select a task", "Select a task to mark complete.", parent=dashboard)
+        def delete_checked_tasks():
+            checked_items = [task for task, var in task_check_vars if var.get()]
+            if not checked_items:
+                messagebox.showinfo("Select task(s)", "Please check one or more tasks to delete.", parent=dashboard)
                 return
-            item["completed"] = not bool(item.get("completed"))
-            if not persist_schedule(): item["completed"] = not item["completed"]
-            refresh_calendar(); refresh_tasks()
-
-        def delete_task():
-            item = selected_task()
-            if not item:
-                messagebox.showinfo("Select a task", "Select a task to delete.", parent=dashboard)
+            if not messagebox.askyesno("Delete tasks", f"Delete {len(checked_items)} checked item(s)?", parent=dashboard):
                 return
-            if not messagebox.askyesno("Delete task", f"Delete '{item.get('title', 'Task')}'?", parent=dashboard):
-                return
-            schedules.remove(item)
-            if not persist_schedule(): schedules.append(item)
-            refresh_calendar(); refresh_tasks()
+            for task in checked_items:
+                if task in schedules:
+                    schedules.remove(task)
+            persist_schedule()
+            refresh_calendar()
+            refresh_tasks()
 
         ttk.Button(task_controls, text="+ Add", command=add_task).pack(side="left", padx=(0, 6))
         ttk.Button(task_controls, text="Edit", command=edit_task).pack(side="left", padx=6)
-        ttk.Button(task_controls, text="Complete / Undo", command=toggle_task).pack(side="left", padx=6)
-        ttk.Button(task_controls, text="Delete", command=delete_task).pack(side="right")
+        ttk.Button(task_controls, text="Delete Checked", command=delete_checked_tasks).pack(side="right")
 
         med_frame = tk.Frame(left, bg="white", padx=18, pady=12)
         med_frame.pack(fill="both", expand=True)
-        tk.Label(med_frame, text="My Medicines", bg="white", fg="#171923",
-                 font=("Arial", 15, "bold")).pack(anchor="w", pady=(0, 8))
+        
+        med_header = tk.Frame(med_frame, bg="white")
+        med_header.pack(fill="x", pady=(0, 8))
+        tk.Label(med_header, text="My Medicines", bg="white", fg="#171923",
+                 font=("Arial", 15, "bold")).pack(side="left")
+
+        med_btn_frame = tk.Frame(med_frame, bg="white")
+        med_btn_frame.pack(fill="x", pady=(0, 6))
+
+        def add_profile_medicine():
+            self._medicine_editor_dialog(None, default_member_id=member_id)
+            refresh_medicines()
+
+        def edit_profile_medicine(event=None):
+            selection = med_table.selection()
+            if not selection:
+                messagebox.showinfo("Select Medicine", "Select a medicine to edit.", parent=dashboard)
+                return
+            med = getattr(dashboard, "_profile_med_map", {}).get(selection[0])
+            if med:
+                self._medicine_editor_dialog(med)
+                refresh_medicines()
+
+        def delete_profile_medicine():
+            selection = med_table.selection()
+            if not selection:
+                messagebox.showinfo("Select Medicine", "Select a medicine to delete.", parent=dashboard)
+                return
+            med = getattr(dashboard, "_profile_med_map", {}).get(selection[0])
+            if med:
+                if messagebox.askyesno("Delete Medicine", f"Delete '{med.get('medicine_name', 'Medicine')}'?", parent=dashboard):
+                    self.medicines = [m for m in self.medicines if id(m) != id(med)]
+                    try:
+                        self._save_medicine_data()
+                    except OSError as exc:
+                        messagebox.showerror("Save failed", str(exc), parent=dashboard)
+                        self.medicines = load_json("medicine.json")
+                        self.members = load_json("member.json")
+                    refresh_medicines()
+                    self.refresh_tables()
+
+        ttk.Button(med_btn_frame, text="+ Add", command=add_profile_medicine).pack(side="left", padx=(0, 4))
+        ttk.Button(med_btn_frame, text="Edit", command=edit_profile_medicine).pack(side="left", padx=4)
+        ttk.Button(med_btn_frame, text="Delete", command=delete_profile_medicine).pack(side="right")
+
         med_table = ttk.Treeview(med_frame, columns=("name", "left", "daily"), show="headings", height=6)
-        for col, heading, width in [("name", "Medicine", 150), ("left", "Pills left", 70), ("daily", "Per day", 70)]:
+        for col, heading, width in [("name", "Medicine", 130), ("left", "Pills left", 65), ("daily", "Per day", 65)]:
             med_table.heading(col, text=heading)
             med_table.column(col, width=width, anchor="w")
         med_table.pack(fill="both", expand=True)
+        med_table.bind("<Double-1>", edit_profile_medicine)
 
         def refresh_medicines():
             med_table.delete(*med_table.get_children())
+            dashboard._profile_med_map = {}
             for med in self.medicines:
                 if str(med.get("family_id")) != family_id:
                     continue
@@ -522,8 +591,9 @@ class FamilyApp:
                     med_member = str(med.get("member_id", ""))
                     matches = med_member == member_id or med_member.casefold() == "all"
                 if matches:
-                    med_table.insert("", "end", values=(med.get("medicine_name", ""),
+                    item_id = med_table.insert("", "end", values=(med.get("medicine_name", ""),
                         med.get("pills_left", "—"), med.get("pills_per_day", "—")))
+                    dashboard._profile_med_map[item_id] = med
 
         refresh_calendar()
         refresh_tasks()
@@ -744,7 +814,6 @@ class FamilyApp:
         return None
 
     def _sync_member_medicine_ids(self, family_id):
-        # Rebuild this family's medicine references while preserving other families.
         for member in self.members:
             if str(member.get("family_id")) == str(family_id):
                 member["medicine_ids"] = []
@@ -784,7 +853,7 @@ class FamilyApp:
         if med:
             self._medicine_editor_dialog(med)
 
-    def _medicine_editor_dialog(self, med=None):
+    def _medicine_editor_dialog(self, med=None, default_member_id=None):
         dialog = tk.Toplevel(self.root)
         dialog.title("Edit Medicine" if med else "Add Medicine")
         dialog.transient(self.root)
@@ -822,6 +891,11 @@ class FamilyApp:
                 match = next((m for m in members if str(m.get("member_id")) == str(med.get("member_id"))), None)
                 if match:
                     selected_label = f"{match.get('avatar', '👤')} {match.get('member_name', 'Member')}"
+        elif default_member_id:
+            match = next((m for m in members if str(m.get("member_id")) == str(default_member_id)), None)
+            if match:
+                selected_label = f"{match.get('avatar', '👤')} {match.get('member_name', 'Member')}"
+
         member_var = tk.StringVar(value=selected_label if selected_label in member_options else "All")
         member_combo = ttk.Combobox(body, textvariable=member_var, values=member_options,
                                     state="readonly", width=29)
@@ -890,7 +964,6 @@ class FamilyApp:
             else:
                 med.clear()
                 med.update(record)
-                # Move edited medicine to the top as well.
                 self.medicines.remove(med)
                 self.medicines.insert(0, med)
             try:
@@ -898,7 +971,6 @@ class FamilyApp:
             except OSError as exc:
                 messagebox.showerror("Save failed", f"Could not save medicine data:\n{exc}", parent=dialog)
                 return
-            # Newly saved or edited medicines should appear at the top.
             self.medicine_sort = None
             self.medicine_filter = None
             if hasattr(self, "med_filter_entry"):
@@ -967,7 +1039,6 @@ class FamilyApp:
             return (0, str(value).casefold())
 
     def build_groceries(self):
-        # 1. To-Do List Frame (Groceries to buy)
         todo_frame = ttk.LabelFrame(self.groceries_tab, text=" Groceries To-Buy (To-Do List) ", padding=10)
         todo_frame.pack(fill="x", pady=(0, 15))
 
@@ -980,7 +1051,6 @@ class FamilyApp:
 
         ttk.Button(add_frame, text="Add Item", command=self.add_todo_item).pack(side="left")
 
-        # Scrollable area for checkboxed items
         canvas_container = ttk.Frame(todo_frame)
         canvas_container.pack(fill="x", expand=True)
 
@@ -1006,7 +1076,6 @@ class FamilyApp:
         self.undo_btn = ttk.Button(btn_frame, text="Undo Delete", command=self.undo_delete, state="disabled")
         self.undo_btn.pack(side="left")
 
-        # 2. Stock and Out-of-Stock Section
         stock_frame = ttk.LabelFrame(self.groceries_tab, text=" Stock for basic groceries ", padding=10)
         stock_frame.pack(fill="both", expand=True)
 
@@ -1016,19 +1085,16 @@ class FamilyApp:
         tables_container = ttk.Frame(stock_frame)
         tables_container.pack(fill="both", expand=True)
 
-        # In Stock Box
         stock_subframe = ttk.LabelFrame(tables_container, text="In Stock")
         stock_subframe.pack(side="left", fill="both", expand=True, padx=(0, 5))
         self.stock_listbox = tk.Listbox(stock_subframe, selectmode="single", font=("Arial", 11), bg="#222", fg="white")
         self.stock_listbox.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # Out of Stock Box
         out_subframe = ttk.LabelFrame(tables_container, text="Out of Stock")
         out_subframe.pack(side="right", fill="both", expand=True, padx=(5, 0))
         self.out_listbox = tk.Listbox(out_subframe, selectmode="single", font=("Arial", 11), bg="#222", fg="white")
         self.out_listbox.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # Bind Drag and Drop Events
         for lb, src in [(self.stock_listbox, "stock"), (self.out_listbox, "out_of_stock")]:
             lb.bind("<ButtonPress-1>", lambda e, s=src, widget=lb: self.start_stock_drag(e, s, widget))
             lb.bind("<B1-Motion>", self.motion_stock_drag)
@@ -1182,7 +1248,6 @@ class FamilyApp:
             if str(m.get("family_id")) == family_id
         ]
 
-        # Give legacy medicine records a stable three-digit ID.
         changed_ids = False
         existing_codes = {
             str(m.get("medicine_id", "")) for m in self.medicines
@@ -1232,7 +1297,6 @@ class FamilyApp:
             ))
             self._medicine_rows[iid] = med
 
-        # Refresh Groceries Stock & Out of Stock
         self.stock_listbox.delete(0, "end")
         self.out_listbox.delete(0, "end")
 
