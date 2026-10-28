@@ -611,7 +611,7 @@ class FamilyApp:
         self.current_family = None
 
         self.undo_timer = None
-        self.last_deleted_items = []
+        self.last_deleted_to_buy = []
         self.dragged_item_info = None
 
         self.tabs = ttk.Notebook(root)
@@ -1042,14 +1042,15 @@ class FamilyApp:
         todo_frame = ttk.LabelFrame(self.groceries_tab, text=" Groceries To-Buy (To-Do List) ", padding=10)
         todo_frame.pack(fill="x", pady=(0, 15))
 
-        add_frame = ttk.Frame(todo_frame)
-        add_frame.pack(fill="x", pady=(0, 10))
+        # Direct To-Buy list entry & button
+        add_todo_frame = ttk.Frame(todo_frame)
+        add_todo_frame.pack(fill="x", pady=(0, 10))
 
-        self.todo_entry = ttk.Entry(add_frame, width=35)
+        self.todo_entry = ttk.Entry(add_todo_frame, width=35)
         self.todo_entry.pack(side="left", padx=(0, 8))
-        self.todo_entry.bind("<Return>", lambda e: self.add_todo_item())
+        self.todo_entry.bind("<Return>", lambda e: self.add_to_buy_item())
 
-        ttk.Button(add_frame, text="Add Item", command=self.add_todo_item).pack(side="left")
+        ttk.Button(add_todo_frame, text="Add Item", command=self.add_to_buy_item).pack(side="left")
 
         canvas_container = ttk.Frame(todo_frame)
         canvas_container.pack(fill="x", expand=True)
@@ -1076,8 +1077,20 @@ class FamilyApp:
         self.undo_btn = ttk.Button(btn_frame, text="Undo Delete", command=self.undo_delete, state="disabled")
         self.undo_btn.pack(side="left")
 
-        stock_frame = ttk.LabelFrame(self.groceries_tab, text=" Stock for basic groceries ", padding=10)
+        stock_frame = ttk.LabelFrame(self.groceries_tab, text=" Stock & Out of Stock Management ", padding=10)
         stock_frame.pack(fill="both", expand=True)
+
+        # Entry box and add-stock / add-out-of-stock buttons
+        add_frame = ttk.Frame(stock_frame)
+        add_frame.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(add_frame, text="Item:").pack(side="left", padx=(0, 6))
+        self.grocery_entry = ttk.Entry(add_frame, width=28)
+        self.grocery_entry.pack(side="left", padx=(0, 8))
+        self.grocery_entry.bind("<Return>", lambda e: self.add_manual_grocery("stock"))
+
+        ttk.Button(add_frame, text="add-stock", command=lambda: self.add_manual_grocery("stock")).pack(side="left", padx=(0, 6))
+        ttk.Button(add_frame, text="add-out-of-stock", command=lambda: self.add_manual_grocery("out_of_stock")).pack(side="left")
 
         ttk.Label(stock_frame, text="Drag items between In Stock and Out of Stock to update location:",
                   foreground="gray").pack(anchor="w", pady=(0, 8))
@@ -1085,20 +1098,80 @@ class FamilyApp:
         tables_container = ttk.Frame(stock_frame)
         tables_container.pack(fill="both", expand=True)
 
+        # In Stock Listbox & Delete button
         stock_subframe = ttk.LabelFrame(tables_container, text="In Stock")
         stock_subframe.pack(side="left", fill="both", expand=True, padx=(0, 5))
         self.stock_listbox = tk.Listbox(stock_subframe, selectmode="single", font=("Arial", 11), bg="#222", fg="white")
         self.stock_listbox.pack(fill="both", expand=True, padx=5, pady=5)
+        ttk.Button(stock_subframe, text="Delete Selected", command=lambda: self.delete_listbox_item(self.stock_listbox, "stock")).pack(anchor="e", padx=5, pady=(0, 5))
 
+        # Out of Stock Listbox & Delete button
         out_subframe = ttk.LabelFrame(tables_container, text="Out of Stock")
         out_subframe.pack(side="right", fill="both", expand=True, padx=(5, 0))
         self.out_listbox = tk.Listbox(out_subframe, selectmode="single", font=("Arial", 11), bg="#222", fg="white")
         self.out_listbox.pack(fill="both", expand=True, padx=5, pady=5)
+        ttk.Button(out_subframe, text="Delete Selected", command=lambda: self.delete_listbox_item(self.out_listbox, "out_of_stock")).pack(anchor="e", padx=5, pady=(0, 5))
 
         for lb, src in [(self.stock_listbox, "stock"), (self.out_listbox, "out_of_stock")]:
             lb.bind("<ButtonPress-1>", lambda e, s=src, widget=lb: self.start_stock_drag(e, s, widget))
             lb.bind("<B1-Motion>", self.motion_stock_drag)
             lb.bind("<ButtonRelease-1>", self.finish_stock_drag)
+
+    def add_to_buy_item(self):
+        text = self.todo_entry.get().strip()
+        if not text:
+            return
+        grocery = self.get_current_family_grocery()
+        if grocery is not None:
+            grocery.setdefault("to_buy", [])
+            grocery.setdefault("out_of_stock", [])
+            grocery.setdefault("stock", [])
+
+            if text not in grocery["to_buy"]:
+                grocery["to_buy"].append(text)
+
+            if text not in grocery["stock"] and text not in grocery["out_of_stock"]:
+                grocery["out_of_stock"].append(text)
+
+            save_json("groceries.json", self.groceries)
+            self.todo_entry.delete(0, "end")
+            self.refresh_tables()
+
+    def add_manual_grocery(self, target_type):
+        text = self.grocery_entry.get().strip()
+        if not text:
+            return
+        grocery = self.get_current_family_grocery()
+        if grocery is not None:
+            grocery.setdefault("stock", [])
+            grocery.setdefault("out_of_stock", [])
+
+            other_type = "out_of_stock" if target_type == "stock" else "stock"
+            if text in grocery[other_type]:
+                grocery[other_type].remove(text)
+
+            if text not in grocery[target_type]:
+                grocery[target_type].append(text)
+
+            save_json("groceries.json", self.groceries)
+            self.grocery_entry.delete(0, "end")
+            self.refresh_tables()
+
+    def delete_listbox_item(self, listbox, source_type):
+        selection = listbox.curselection()
+        if not selection:
+            messagebox.showinfo("No Selection", "Please select an item to delete.")
+            return
+        index = selection[0]
+        item = listbox.get(index)
+        grocery = self.get_current_family_grocery()
+        if grocery is not None:
+            if item in grocery.get(source_type, []):
+                grocery[source_type].remove(item)
+            if item in grocery.get("to_buy", []):
+                grocery["to_buy"].remove(item)
+            save_json("groceries.json", self.groceries)
+            self.refresh_tables()
 
     def start_stock_drag(self, event, source_type, widget):
         index = widget.nearest(event.y)
@@ -1150,38 +1223,22 @@ class FamilyApp:
             self.groceries.append(grocery)
         return grocery
 
-    def add_todo_item(self):
-        text = self.todo_entry.get().strip()
-        if not text:
-            return
-        grocery = self.get_current_family_grocery()
-        if grocery is not None:
-            grocery.setdefault("to_buy", []).append(text)
-            save_json("groceries.json", self.groceries)
-            self.todo_entry.delete(0, "end")
-            self.refresh_todo_list()
-
     def delete_selected_todo(self):
         grocery = self.get_current_family_grocery()
         if not grocery:
             return
 
-        to_buy = grocery.get("to_buy", [])
-        selected_indexes = [
-            idx for idx, var in getattr(self, "todo_check_vars", []) if var.get()
-        ]
+        selected_items = [item for item, var in getattr(self, "todo_check_vars", []) if var.get()]
 
-        if not selected_indexes:
-            messagebox.showinfo("No Selection", "Please check items to delete.")
+        if not selected_items:
+            messagebox.showinfo("No Selection", "Please check items to delete from the To-Buy list.")
             return
 
-        self.last_deleted_items = [to_buy[idx] for idx in selected_indexes]
-        selected_set = set(selected_indexes)
-        grocery["to_buy"] = [
-            item for idx, item in enumerate(to_buy) if idx not in selected_set
-        ]
+        self.last_deleted_to_buy = selected_items
+        grocery["to_buy"] = [item for item in grocery.get("to_buy", []) if item not in selected_items]
+
         save_json("groceries.json", self.groceries)
-        self.refresh_todo_list()
+        self.refresh_tables()
 
         self.start_undo_timer(10)
 
@@ -1194,23 +1251,23 @@ class FamilyApp:
             self.undo_timer = self.root.after(1000, self.start_undo_timer, seconds_left - 1)
         else:
             self.undo_btn.config(state="disabled", text="Undo Delete")
-            self.last_deleted_items = []
+            self.last_deleted_to_buy = []
             self.undo_timer = None
 
     def undo_delete(self):
-        if not self.last_deleted_items:
+        if not self.last_deleted_to_buy:
             return
 
         grocery = self.get_current_family_grocery()
         if grocery is not None:
-            grocery.setdefault("to_buy", []).extend(self.last_deleted_items)
+            grocery.setdefault("to_buy", []).extend(self.last_deleted_to_buy)
             save_json("groceries.json", self.groceries)
-            self.last_deleted_items = []
+            self.last_deleted_to_buy = []
             if self.undo_timer:
                 self.root.after_cancel(self.undo_timer)
                 self.undo_timer = None
             self.undo_btn.config(state="disabled", text="Undo Delete")
-            self.refresh_todo_list()
+            self.refresh_tables()
 
     def refresh_todo_list(self):
         for widget in self.todo_items_frame.winfo_children():
@@ -1221,13 +1278,41 @@ class FamilyApp:
             return
 
         grocery = self.get_current_family_grocery()
+        out_items = grocery.get("out_of_stock", [])
+        stock_items = grocery.get("stock", [])
         to_buy_items = grocery.get("to_buy", [])
 
-        for idx, item in enumerate(to_buy_items):
-            var = tk.BooleanVar(value=False)
-            chk = ttk.Checkbutton(self.todo_items_frame, text=item, variable=var)
+        for item in out_items:
+            if item not in to_buy_items:
+                to_buy_items.append(item)
+
+        combined_items = list(dict.fromkeys(to_buy_items))
+
+        for item in combined_items:
+            is_checked = item in stock_items
+            var = tk.BooleanVar(value=is_checked)
+
+            def on_toggle(it=item, v=var):
+                g = self.get_current_family_grocery()
+                if g:
+                    g.setdefault("stock", [])
+                    g.setdefault("out_of_stock", [])
+                    if v.get():
+                        if it in g["out_of_stock"]:
+                            g["out_of_stock"].remove(it)
+                        if it not in g["stock"]:
+                            g["stock"].append(it)
+                    else:
+                        if it in g["stock"]:
+                            g["stock"].remove(it)
+                        if it not in g["out_of_stock"]:
+                            g["out_of_stock"].append(it)
+                    save_json("groceries.json", self.groceries)
+                    self.refresh_tables()
+
+            chk = ttk.Checkbutton(self.todo_items_frame, text=item, variable=var, command=on_toggle)
             chk.pack(anchor="w", pady=2)
-            self.todo_check_vars.append((idx, var))
+            self.todo_check_vars.append((item, var))
 
     @staticmethod
     def clear_table(table):
