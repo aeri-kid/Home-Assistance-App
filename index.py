@@ -608,6 +608,7 @@ class FamilyApp:
         self.members = load_json("member.json")
         self.medicines = load_json("medicine.json")
         self.groceries = load_json("groceries.json")
+        self.bills = load_json("Bill.json")
         self.current_family = None
 
         self.undo_timer = None
@@ -621,16 +622,19 @@ class FamilyApp:
         self.members_tab = ttk.Frame(self.tabs, padding=12)
         self.medicine_tab = ttk.Frame(self.tabs, padding=12)
         self.groceries_tab = ttk.Frame(self.tabs, padding=12)
+        self.bills_tab = ttk.Frame(self.tabs, padding=12)
 
         self.tabs.add(self.login_tab, text="Login")
         self.tabs.add(self.members_tab, text="Members 🔒")
         self.tabs.add(self.medicine_tab, text="Medicine 🔒")
         self.tabs.add(self.groceries_tab, text="Groceries 🔒")
+        self.tabs.add(self.bills_tab, text="Bills 🔒")
 
         self.build_login()
         self.build_members()
         self.build_medicine()
         self.build_groceries()
+        self.build_bills()
         self.lock_tabs()
         self.render_profiles()
 
@@ -657,17 +661,19 @@ class FamilyApp:
                   foreground="gray").pack(pady=10)
 
     def lock_tabs(self):
-        for tab in (self.members_tab, self.medicine_tab, self.groceries_tab):
+        for tab in (self.members_tab, self.medicine_tab, self.groceries_tab, self.bills_tab):
             self.tabs.tab(tab, state="disabled")
         self.tabs.select(self.login_tab)
         self.tabs.tab(self.members_tab, text="Members 🔒")
         self.tabs.tab(self.medicine_tab, text="Medicine 🔒")
         self.tabs.tab(self.groceries_tab, text="Groceries 🔒")
+        self.tabs.tab(self.bills_tab, text="Bills 🔒")
 
     def unlock_tabs(self):
         self.tabs.tab(self.members_tab, state="normal", text="Members")
         self.tabs.tab(self.medicine_tab, state="normal", text="Medicine")
         self.tabs.tab(self.groceries_tab, state="normal", text="Groceries")
+        self.tabs.tab(self.bills_tab, state="normal", text="Bills")
 
     def login(self):
         entered = self.family_entry.get().strip().casefold()
@@ -1038,6 +1044,385 @@ class FamilyApp:
         except (TypeError, ValueError):
             return (0, str(value).casefold())
 
+
+    def build_bills(self):
+        header = ttk.Frame(self.bills_tab)
+        header.pack(fill="x", pady=(0, 8))
+
+        ttk.Label(
+            header, text="Money Utility Bills",
+            font=("Arial", 22, "bold")
+        ).pack(side="left")
+
+        ttk.Button(
+            header, text="+ Add Month",
+            command=self.add_bill_month_dialog
+        ).pack(side="right")
+
+        controls = ttk.Frame(self.bills_tab)
+        controls.pack(fill="x", pady=(0, 10))
+        ttk.Label(controls, text="Show:").pack(side="left")
+        self.bill_period_var = tk.StringVar(value="All months")
+        self.bill_period_combo = ttk.Combobox(
+            controls, textvariable=self.bill_period_var, state="readonly",
+            width=18, values=("All months", "Last 3 months", "Last 6 months", "This year")
+        )
+        self.bill_period_combo.pack(side="left", padx=(6, 8))
+        self.bill_period_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_bills())
+        ttk.Label(
+            controls, text="Select a month to edit it or change its payment status.",
+            foreground="gray"
+        ).pack(side="left", padx=8)
+
+        self.bill_canvas = tk.Canvas(
+            self.bills_tab, bg="#F3F4F6", highlightthickness=0
+        )
+        scrollbar = ttk.Scrollbar(
+            self.bills_tab, orient="vertical", command=self.bill_canvas.yview
+        )
+        self.bill_cards_frame = tk.Frame(self.bill_canvas, bg="#F3F4F6")
+        self.bill_cards_frame.bind(
+            "<Configure>",
+            lambda e: self.bill_canvas.configure(
+                scrollregion=self.bill_canvas.bbox("all")
+            )
+        )
+        self.bill_canvas_window = self.bill_canvas.create_window(
+            (0, 0), window=self.bill_cards_frame, anchor="nw"
+        )
+        self.bill_canvas.configure(yscrollcommand=scrollbar.set)
+        self.bill_canvas.bind(
+            "<Configure>",
+            lambda e: self.bill_canvas.itemconfigure(
+                self.bill_canvas_window, width=e.width
+            )
+        )
+        self.bill_canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+    def _bill_records_for_family(self):
+        if not self.current_family:
+            return []
+        family_id = str(self.current_family.get("family_id", ""))
+        return [
+            bill for bill in self.bills
+            if str(bill.get("family_id", "")) == family_id
+        ]
+
+    @staticmethod
+    def _bill_total(bill):
+        total = 0
+        for item in bill.get("items", []):
+            try:
+                total += float(item.get("amount", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+        return total
+
+    @staticmethod
+    def _format_mmk(value):
+        try:
+            return f"{float(value):,.0f}"
+        except (TypeError, ValueError):
+            return "0"
+
+    def _next_bill_id(self):
+        used = {
+            str(b.get("bill_id", ""))
+            for b in self.bills
+            if str(b.get("bill_id", "")).isdigit()
+        }
+        number = 1
+        while f"B{number:04d}" in used:
+            number += 1
+        return f"B{number:04d}"
+
+    def refresh_bills(self):
+        if not hasattr(self, "bill_cards_frame"):
+            return
+        for widget in self.bill_cards_frame.winfo_children():
+            widget.destroy()
+
+        if not self.current_family:
+            return
+
+        records = self._bill_records_for_family()
+        period = self.bill_period_var.get() if hasattr(self, "bill_period_var") else "All months"
+        today = date.today()
+
+        def month_key(record):
+            try:
+                return datetime.strptime(record.get("month", ""), "%B %Y")
+            except ValueError:
+                return datetime.min
+
+        records.sort(key=month_key, reverse=True)
+        if period in ("Last 3 months", "Last 6 months"):
+            count = 3 if period == "Last 3 months" else 6
+            cutoff = today.year * 12 + today.month - count + 1
+            records = [
+                r for r in records
+                if month_key(r) != datetime.min
+                and month_key(r).year * 12 + month_key(r).month >= cutoff
+            ]
+        elif period == "This year":
+            records = [r for r in records if month_key(r).year == today.year]
+
+        if not records:
+            tk.Label(
+                self.bill_cards_frame,
+                text="No monthly bills yet. Select '+ Add Month' to create your first record.",
+                bg="#F3F4F6", fg="#626778", font=("Arial", 12),
+                pady=35
+            ).pack(fill="x")
+            return
+
+        for bill in records:
+            card = tk.Frame(
+                self.bill_cards_frame, bg="white",
+                highlightbackground="#D9DDE8", highlightthickness=1
+            )
+            card.pack(fill="x", padx=12, pady=9)
+
+            top = tk.Frame(card, bg="white")
+            top.pack(fill="x", padx=18, pady=(12, 6))
+            tk.Label(
+                top, text=bill.get("month", "Month"),
+                bg="white", fg="#202333", font=("Arial", 17, "bold")
+            ).pack(side="left")
+
+            paid = bool(bill.get("paid", False))
+            stamp_text = "PAID" if paid else "UNPAID"
+            stamp_color = "#218838" if paid else "#C62828"
+            tk.Label(
+                top, text=f"  {stamp_text}  ", bg="white",
+                fg=stamp_color, font=("Arial", 11, "bold"),
+                highlightbackground=stamp_color, highlightthickness=2,
+                padx=5, pady=2
+            ).pack(side="right")
+
+            table = tk.Frame(card, bg="white")
+            table.pack(fill="x", padx=18, pady=4)
+            tk.Label(table, text="Bill", bg="white", fg="#777777",
+                     font=("Arial", 9, "bold"), width=25, anchor="w").grid(row=0, column=0, sticky="w")
+            tk.Label(table, text="Quantity / Unit", bg="white", fg="#777777",
+                     font=("Arial", 9, "bold"), width=20, anchor="w").grid(row=0, column=1, sticky="w")
+            tk.Label(table, text="Amount (MMK)", bg="white", fg="#777777",
+                     font=("Arial", 9, "bold"), width=18, anchor="e").grid(row=0, column=2, sticky="e")
+
+            for row, item in enumerate(bill.get("items", []), start=1):
+                tk.Label(
+                    table, text=item.get("name", ""), bg="white",
+                    fg="#202333", font=("Arial", 10), width=25, anchor="w"
+                ).grid(row=row, column=0, sticky="w", pady=3)
+                tk.Label(
+                    table, text=item.get("quantity", "") or "—", bg="white",
+                    fg="#555555", font=("Arial", 10), width=20, anchor="w"
+                ).grid(row=row, column=1, sticky="w", pady=3)
+                tk.Label(
+                    table, text=self._format_mmk(item.get("amount", 0)),
+                    bg="white", fg="#202333", font=("Arial", 10),
+                    width=18, anchor="e"
+                ).grid(row=row, column=2, sticky="e", pady=3)
+
+            total_row = tk.Frame(card, bg="white")
+            total_row.pack(fill="x", padx=18, pady=(8, 10))
+            tk.Frame(total_row, bg="#D8DCE5", height=1).pack(fill="x", pady=(0, 8))
+            tk.Label(
+                total_row, text=f"TOTAL:  {self._format_mmk(self._bill_total(bill))} MMK",
+                bg="white", fg="#202333", font=("Arial", 13, "bold")
+            ).pack(side="left")
+
+            actions = tk.Frame(total_row, bg="white")
+            actions.pack(side="right")
+            tk.Button(
+                actions, text="Edit", command=lambda b=bill: self.edit_bill_dialog(b),
+                bg="#E8EBF5", fg="#202333", relief="flat", padx=12, pady=5
+            ).pack(side="left", padx=4)
+            tk.Button(
+                actions, text="Mark Unpaid" if paid else "Mark Paid",
+                command=lambda b=bill: self.toggle_bill_paid(b),
+                bg="#218838" if not paid else "#777777", fg="white",
+                relief="flat", padx=12, pady=5
+            ).pack(side="left", padx=4)
+
+    def toggle_bill_paid(self, bill):
+        bill["paid"] = not bool(bill.get("paid", False))
+        try:
+            save_json("Bill.json", self.bills)
+        except OSError as exc:
+            bill["paid"] = not bill["paid"]
+            messagebox.showerror("Save failed", f"Could not update payment status:\n{exc}")
+            return
+        self.refresh_bills()
+
+    def add_bill_month_dialog(self):
+        self._bill_editor_dialog(None)
+
+    def edit_bill_dialog(self, bill):
+        self._bill_editor_dialog(bill)
+
+    def _bill_editor_dialog(self, bill=None):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Edit Monthly Bills" if bill else "Add Monthly Bills")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        body = ttk.Frame(dialog, padding=18)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body, text="Monthly Bills",
+            font=("Arial", 17, "bold")
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
+
+        month_names = [f"{calendar.month_name[m]} {y}"
+                       for y in range(date.today().year - 5, date.today().year + 2)
+                       for m in range(1, 13)]
+        month_var = tk.StringVar(value=bill.get("month", "") if bill else
+                                 f"{calendar.month_name[date.today().month]} {date.today().year}")
+        ttk.Label(body, text="Month:").grid(row=1, column=0, sticky="w", pady=6)
+        month_combo = ttk.Combobox(
+            body, textvariable=month_var, values=month_names,
+            state="readonly", width=22
+        )
+        month_combo.grid(row=1, column=1, columnspan=3, sticky="w", pady=6)
+
+        headings = ("Bill category", "Quantity / Unit", "Amount (MMK)")
+        for col, heading in enumerate(headings):
+            ttk.Label(body, text=heading, font=("Arial", 9, "bold")).grid(
+                row=2, column=col, sticky="w", padx=4, pady=(10, 5)
+            )
+
+        defaults = [
+            ("Electricity Bill", "unit"),
+            ("Water Bill", ""),
+            ("Drinking Water", "bottle"),
+            ("Grocery + Others", "")
+        ]
+        existing = bill.get("items", []) if bill else []
+        old_by_name = {item.get("name"): item for item in existing}
+        entries = []
+        total_var = tk.StringVar(value="0 MMK")
+
+        def update_total(*_):
+            total = 0
+            for _, _, amount_entry in entries:
+                raw = amount_entry.get().replace(",", "").strip()
+                if raw:
+                    try:
+                        total += float(raw)
+                    except ValueError:
+                        pass
+            total_var.set(f"{total:,.0f} MMK")
+
+        for row, (name, default_unit) in enumerate(defaults, start=3):
+            old = old_by_name.get(name, {})
+            ttk.Label(body, text=name).grid(row=row, column=0, sticky="w", padx=4, pady=5)
+            quantity = ttk.Entry(body, width=18)
+            quantity.insert(0, str(old.get("quantity", default_unit)))
+            quantity.grid(row=row, column=1, padx=4, pady=5)
+            amount = ttk.Entry(body, width=18)
+            amount.insert(0, str(old.get("amount", "")))
+            amount.grid(row=row, column=2, padx=4, pady=5)
+            amount.bind("<KeyRelease>", update_total)
+            entries.append((name, quantity, amount))
+
+        total_row = 7
+        ttk.Separator(body).grid(row=total_row, column=0, columnspan=3, sticky="ew", pady=10)
+        ttk.Label(body, text="TOTAL", font=("Arial", 12, "bold")).grid(
+            row=total_row + 1, column=1, sticky="e", padx=4
+        )
+        ttk.Label(body, textvariable=total_var, font=("Arial", 12, "bold")).grid(
+            row=total_row + 1, column=2, sticky="e", padx=4
+        )
+        update_total()
+
+        def save_bill():
+            month = month_var.get().strip()
+            try:
+                datetime.strptime(month, "%B %Y")
+            except ValueError:
+                messagebox.showerror("Invalid month", "Choose a valid month and year.", parent=dialog)
+                return
+
+            family_id = str(self.current_family.get("family_id", ""))
+            duplicate = next((
+                b for b in self.bills
+                if str(b.get("family_id")) == family_id
+                and b.get("month") == month
+                and b is not bill
+            ), None)
+            if duplicate:
+                messagebox.showerror(
+                    "Month already exists",
+                    "A bill record for this month already exists. Edit that month instead.",
+                    parent=dialog
+                )
+                return
+
+            items = []
+            for name, quantity_entry, amount_entry in entries:
+                raw_amount = amount_entry.get().replace(",", "").strip()
+                if not raw_amount:
+                    amount_value = 0
+                else:
+                    try:
+                        amount_value = float(raw_amount)
+                        if amount_value < 0:
+                            raise ValueError
+                    except ValueError:
+                        messagebox.showerror(
+                            "Invalid amount",
+                            f"Enter a valid non-negative amount for {name}.",
+                            parent=dialog
+                        )
+                        amount_entry.focus_set()
+                        return
+                items.append({
+                    "name": name,
+                    "quantity": quantity_entry.get().strip(),
+                    "amount": int(amount_value) if amount_value.is_integer() else amount_value
+                })
+
+            if bill is None:
+                record = {
+                    "bill_id": self._next_bill_id(),
+                    "family_id": family_id,
+                    "month": month,
+                    "items": items,
+                    "total": sum(float(i["amount"]) for i in items),
+                    "paid": False
+                }
+                self.bills.insert(0, record)
+            else:
+                old_record = dict(bill)
+                bill.update({
+                    "month": month,
+                    "items": items,
+                    "total": sum(float(i["amount"]) for i in items)
+                })
+                record = bill
+
+            try:
+                save_json("Bill.json", self.bills)
+            except OSError as exc:
+                if bill is None:
+                    self.bills.remove(record)
+                else:
+                    bill.clear()
+                    bill.update(old_record)
+                messagebox.showerror("Save failed", f"Could not save Bill.json:\n{exc}", parent=dialog)
+                return
+
+            dialog.destroy()
+            self.refresh_bills()
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=9, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(buttons, text="Save Month", command=save_bill).pack(side="right")
+
     def build_groceries(self):
         todo_frame = ttk.LabelFrame(self.groceries_tab, text=" Groceries To-Buy (To-Do List) ", padding=10)
         todo_frame.pack(fill="x", pady=(0, 15))
@@ -1325,6 +1710,7 @@ class FamilyApp:
             self.stock_listbox.delete(0, "end")
             self.out_listbox.delete(0, "end")
             self.refresh_todo_list()
+            self.refresh_bills()
             return
 
         family_id = str(self.current_family.get("family_id", ""))
@@ -1395,6 +1781,7 @@ class FamilyApp:
             self.out_listbox.insert("end", item)
 
         self.refresh_todo_list()
+        self.refresh_bills()
 
     def add_member_dialog(self):
         dialog = tk.Toplevel(self.root)
