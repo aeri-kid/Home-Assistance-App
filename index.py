@@ -655,10 +655,103 @@ class FamilyApp:
         self.password_entry.grid(row=1, column=1, padx=8, pady=8)
         self.password_entry.bind("<Return>", lambda event: self.login())
 
-        ttk.Button(form, text="Log in", command=self.login).grid(
-            row=2, column=0, columnspan=2, pady=14)
-        ttk.Label(self.login_tab, text="Example accounts are in families.json.",
+        login_buttons = ttk.Frame(form)
+        login_buttons.grid(row=2, column=0, columnspan=2, pady=14)
+        ttk.Button(login_buttons, text="Log in", command=self.login).pack(side="left", padx=6)
+        ttk.Button(login_buttons, text="Sign Up", command=self.signup_family_dialog).pack(side="left", padx=6)
+        ttk.Label(self.login_tab, text="New here? Create a family account with Sign Up.",
                   foreground="gray").pack(pady=10)
+
+    def signup_family_dialog(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Create a Family Account")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        body = ttk.Frame(dialog, padding=18)
+        body.pack(fill="both", expand=True)
+
+        ttk.Label(body, text="Create Your Family",
+                  font=("Arial", 17, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 12)
+        )
+
+        ttk.Label(body, text="Family name:").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
+        name_entry = ttk.Entry(body, width=30)
+        name_entry.grid(row=1, column=1, pady=6)
+
+        ttk.Label(body, text="Password:").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=6)
+        password_entry = ttk.Entry(body, width=30, show="*")
+        password_entry.grid(row=2, column=1, pady=6)
+
+        ttk.Label(body, text="Confirm password:").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        confirm_entry = ttk.Entry(body, width=30, show="*")
+        confirm_entry.grid(row=3, column=1, pady=6)
+
+        def create_family():
+            family_name = name_entry.get().strip()
+            password = password_entry.get()
+            confirmation = confirm_entry.get()
+
+            if not family_name or not password or not confirmation:
+                messagebox.showwarning(
+                    "Missing information", "Please complete all fields.", parent=dialog
+                )
+                return
+            if password != confirmation:
+                messagebox.showerror(
+                    "Password mismatch", "The passwords do not match.", parent=dialog
+                )
+                confirm_entry.delete(0, "end")
+                confirm_entry.focus_set()
+                return
+            if any(str(f.get("family_name", "")).casefold() == family_name.casefold()
+                   for f in self.families):
+                messagebox.showerror(
+                    "Family already exists", "Please choose a different family name.", parent=dialog
+                )
+                name_entry.focus_set()
+                return
+
+            used_ids = {
+                str(f.get("family_id", "")) for f in self.families
+            }
+            number = 1
+            while f"F{number:03d}" in used_ids:
+                number += 1
+
+            new_family = {
+                "family_id": f"F{number:03d}",
+                "family_name": family_name,
+                "family_password": password
+            }
+            self.families.append(new_family)
+            try:
+                save_json("family.json", self.families)
+            except OSError as exc:
+                self.families.remove(new_family)
+                messagebox.showerror(
+                    "Sign up failed", f"Could not save family.json:\\n{exc}", parent=dialog
+                )
+                return
+
+            self.family_entry.delete(0, "end")
+            self.family_entry.insert(0, family_name)
+            self.password_entry.delete(0, "end")
+            self.password_entry.insert(0, password)
+            dialog.destroy()
+            messagebox.showinfo(
+                "Family created",
+                f"{family_name} was registered successfully. Your Family ID is {new_family['family_id']}. You can now log in.",
+                parent=self.root
+            )
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=4, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(buttons, text="Create Family", command=create_family).pack(side="right")
+        name_entry.focus_set()
 
     def lock_tabs(self):
         for tab in (self.members_tab, self.medicine_tab, self.groceries_tab, self.bills_tab):
@@ -1288,7 +1381,7 @@ class FamilyApp:
         )
         month_combo.grid(row=1, column=1, columnspan=3, sticky="w", pady=6)
 
-        headings = ("Bill category", "Quantity / Unit", "Amount (MMK)")
+        headings = ("Bill category", "Quantity", "Price / Amount (MMK)", "Total (MMK)")
         for col, heading in enumerate(headings):
             ttk.Label(body, text=heading, font=("Arial", 9, "bold")).grid(
                 row=2, column=col, sticky="w", padx=4, pady=(10, 5)
@@ -1305,36 +1398,87 @@ class FamilyApp:
         entries = []
         total_var = tk.StringVar(value="0 MMK")
 
+        def parse_number(entry):
+            raw = entry.get().replace(",", "").strip()
+            if not raw:
+                return 0.0
+            return float(raw)
+
         def update_total(*_):
-            total = 0
-            for _, _, amount_entry in entries:
-                raw = amount_entry.get().replace(",", "").strip()
-                if raw:
-                    try:
-                        total += float(raw)
-                    except ValueError:
-                        pass
+            total = 0.0
+            for item_row in entries:
+                try:
+                    if item_row["name"] == "Drinking Water":
+                        total += parse_number(item_row["price"]) * parse_number(item_row["quantity"])
+                    else:
+                        total += parse_number(item_row["amount"])
+                except ValueError:
+                    pass
             total_var.set(f"{total:,.0f} MMK")
 
         for row, (name, default_unit) in enumerate(defaults, start=3):
             old = old_by_name.get(name, {})
             ttk.Label(body, text=name).grid(row=row, column=0, sticky="w", padx=4, pady=5)
-            quantity = ttk.Entry(body, width=18)
-            quantity.insert(0, str(old.get("quantity", default_unit)))
-            quantity.grid(row=row, column=1, padx=4, pady=5)
-            amount = ttk.Entry(body, width=18)
-            amount.insert(0, str(old.get("amount", "")))
-            amount.grid(row=row, column=2, padx=4, pady=5)
-            amount.bind("<KeyRelease>", update_total)
-            entries.append((name, quantity, amount))
+
+            if name == "Drinking Water":
+                quantity = ttk.Entry(body, width=10)
+                old_quantity = old.get("bottle_count", old.get("quantity", 0))
+                if isinstance(old_quantity, str) and old_quantity.strip().lower() in ("bottle", "bottles"):
+                    old_quantity = 0
+                quantity.insert(0, str(old_quantity if old_quantity is not None else 0))
+                quantity.grid(row=row, column=1, padx=(4, 0), pady=5, sticky="w")
+                ttk.Label(body, text="bottle(s)").grid(row=row, column=1, padx=(86, 4), pady=5, sticky="w")
+
+                price = ttk.Entry(body, width=15)
+                price.insert(0, str(old.get("price_per_bottle", old.get("unit_price", ""))))
+                price.grid(row=row, column=2, padx=4, pady=5, sticky="w")
+
+                calculated = tk.StringVar(value="0")
+                ttk.Label(body, textvariable=calculated, width=15, anchor="e").grid(
+                    row=row, column=3, padx=4, pady=5, sticky="e"
+                )
+                def update_drinking_total(q=quantity, p=price, result=calculated):
+                    try:
+                        result.set(f"{parse_number(q) * parse_number(p):,.0f}")
+                    except ValueError:
+                        result.set("—")
+                    update_total()
+                quantity.bind("<KeyRelease>", update_drinking_total)
+                price.bind("<KeyRelease>", update_drinking_total)
+                entries.append({
+                    "name": name, "quantity": quantity, "price": price,
+                    "calculated": calculated
+                })
+                update_drinking_total()
+            else:
+                quantity = ttk.Entry(body, width=10)
+                quantity.insert(0, str(old.get("quantity", "")))
+                quantity.grid(row=row, column=1, padx=(4, 0), pady=5, sticky="w")
+                if name == "Electricity Bill":
+                    ttk.Label(body, text="unit(s)").grid(
+                        row=row, column=1, padx=(86, 4), pady=5, sticky="w"
+                    )
+                elif name == "Water Bill":
+                    ttk.Label(body, text="").grid(row=row, column=1, padx=(86, 4), pady=5, sticky="w")
+
+                amount = ttk.Entry(body, width=15)
+                amount.insert(0, str(old.get("amount", "")))
+                amount.grid(row=row, column=2, padx=4, pady=5, sticky="w")
+                amount.bind("<KeyRelease>", update_total)
+                ttk.Label(body, textvariable=tk.StringVar(value="")).grid(
+                    row=row, column=3, padx=4, pady=5
+                )
+                entries.append({
+                    "name": name, "quantity": quantity, "amount": amount
+                })
 
         total_row = 7
-        ttk.Separator(body).grid(row=total_row, column=0, columnspan=3, sticky="ew", pady=10)
+        ttk.Separator(body).grid(row=total_row, column=0, columnspan=4, sticky="ew", pady=10)
         ttk.Label(body, text="TOTAL", font=("Arial", 12, "bold")).grid(
-            row=total_row + 1, column=1, sticky="e", padx=4
+            row=total_row + 1, column=2, sticky="e", padx=4
         )
         ttk.Label(body, textvariable=total_var, font=("Arial", 12, "bold")).grid(
-            row=total_row + 1, column=2, sticky="e", padx=4
+            row=total_row + 1, column=3, sticky="e", padx=4
         )
         update_total()
 
@@ -1362,28 +1506,41 @@ class FamilyApp:
                 return
 
             items = []
-            for name, quantity_entry, amount_entry in entries:
-                raw_amount = amount_entry.get().replace(",", "").strip()
-                if not raw_amount:
-                    amount_value = 0
-                else:
-                    try:
-                        amount_value = float(raw_amount)
+            for item_row in entries:
+                name = item_row["name"]
+                quantity_entry = item_row["quantity"]
+                try:
+                    if name == "Drinking Water":
+                        bottle_count = parse_number(quantity_entry)
+                        unit_price = parse_number(item_row["price"])
+                        if bottle_count < 0 or unit_price < 0:
+                            raise ValueError
+                        amount_value = bottle_count * unit_price
+                        items.append({
+                            "name": name,
+                            "quantity": f"{int(bottle_count) if bottle_count.is_integer() else bottle_count} bottle(s)",
+                            "bottle_count": int(bottle_count) if bottle_count.is_integer() else bottle_count,
+                            "price_per_bottle": int(unit_price) if unit_price.is_integer() else unit_price,
+                            "amount": int(amount_value) if amount_value.is_integer() else amount_value
+                        })
+                    else:
+                        amount_value = parse_number(item_row["amount"])
                         if amount_value < 0:
                             raise ValueError
-                    except ValueError:
-                        messagebox.showerror(
-                            "Invalid amount",
-                            f"Enter a valid non-negative amount for {name}.",
-                            parent=dialog
-                        )
-                        amount_entry.focus_set()
-                        return
-                items.append({
-                    "name": name,
-                    "quantity": quantity_entry.get().strip(),
-                    "amount": int(amount_value) if amount_value.is_integer() else amount_value
-                })
+                        items.append({
+                            "name": name,
+                            "quantity": quantity_entry.get().strip(),
+                            "amount": int(amount_value) if amount_value.is_integer() else amount_value
+                        })
+                except ValueError:
+                    bad_entry = item_row.get("price") or item_row.get("amount") or quantity_entry
+                    messagebox.showerror(
+                        "Invalid amount or quantity",
+                        f"Enter valid non-negative numbers for {name}.",
+                        parent=dialog
+                    )
+                    bad_entry.focus_set()
+                    return
 
             if bill is None:
                 record = {
